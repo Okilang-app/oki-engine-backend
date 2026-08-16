@@ -222,7 +222,15 @@ class JobService:
                         await uow.session.flush()
                 except Exception as exc:
                     # Real API failed — return ERROR, never fake data silently
+                    err_msg = str(exc)
                     print(f"[analyze_job] Real transcription failed: {exc}")
+                    if "NoSuchKey" in err_msg or "specified key does not exist" in err_msg.lower():
+                        raise ProblemException(
+                            status_code=404,
+                            code="source_file_missing",
+                            title="Source video file not found",
+                            detail="The uploaded video file is missing from storage. Re-upload the asset and try again.",
+                        )
                     raise ProblemException(
                         status_code=502,
                         code="transcription_failed",
