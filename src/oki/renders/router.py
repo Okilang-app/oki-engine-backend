@@ -108,7 +108,7 @@ async def get_render_playback_url(
     import boto3
     s3 = boto3.client(
         "s3",
-        endpoint_url=str(settings.s3_endpoint_url) if settings.s3_endpoint_url else None,
+        endpoint_url=str(settings.s3_public_url or settings.s3_endpoint_url),
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
         config=BotoConfig(signature_version="s3v4"),
@@ -121,8 +121,6 @@ async def get_render_playback_url(
         Params={"Bucket": settings.s3_bucket, "Key": job.output_storage_key},
         ExpiresIn=3600,
     )
-    if settings.s3_public_url and s3.meta.endpoint_url:
-        url = url.replace(s3.meta.endpoint_url, settings.s3_public_url, 1)
     return {"playback_url": url, "render_id": str(render_id)}
 
 
