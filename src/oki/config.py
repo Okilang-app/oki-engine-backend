@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     keycloak_jwks_cache_seconds: float = 300
     keycloak_jwks_timeout_seconds: float = 5
     ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+    clamav_host: str = "127.0.0.1"
+    clamav_port: int = 3310
 
     # --- AI Provider Settings ---
     # OpenAI-compatible API (works for standard OpenAI, Azure OpenAI, local endpoints)

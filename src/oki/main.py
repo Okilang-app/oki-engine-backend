@@ -74,7 +74,13 @@ async def _identity_lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = S3ObjectStore(settings)
     app.state.s3_store = store
     app.state.creator_service = CreatorService(uow_factory, authorizer)
-    app.state.asset_service = AssetService(uow_factory, authorizer, store)
+    app.state.asset_service = AssetService(
+        uow_factory,
+        authorizer,
+        store,
+        clamav_host=settings.clamav_host,
+        clamav_port=settings.clamav_port,
+    )
     app.state.ad_service = AdService(uow_factory, authorizer)
     app.state.analysis_service = AnalysisService(uow_factory, authorizer)
     app.state.translation_service = TranslationService(uow_factory, authorizer)

@@ -55,12 +55,16 @@ class AssetService:
         uow_factory: Callable[[], UnitOfWork],
         authorizer: Authorizer,
         store: ObjectStore,
+        clamav_host: str = "127.0.0.1",
+        clamav_port: int = 3310,
     ) -> None:
         self._uow_factory = uow_factory
         self._authorizer = authorizer
         self._store = store
         self._gate = RightsGate(uow_factory)
-        self._validation = AssetValidationService()
+        self._validation = AssetValidationService(
+            clamav_host=clamav_host, clamav_port=clamav_port
+        )
 
     async def create_upload(
         self,

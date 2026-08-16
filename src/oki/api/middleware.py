@@ -75,6 +75,9 @@ class ProblemMiddleware:
             if correlation_id is None:
                 correlation_id = generate_correlation_id()
                 request.state.correlation_id = correlation_id
+            import traceback
+            print(f"\n[500 ERROR] {scope['method']} {scope['path']}: {type(exception).__name__}: {exception}")
+            traceback.print_exc()
             _REQUEST_LOGGER.exception(
                 "unhandled_http_exception",
                 method=scope["method"],

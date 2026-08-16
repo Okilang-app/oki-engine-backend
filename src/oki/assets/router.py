@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from oki.api.errors import ProblemException, generate_correlation_id, parse_correlation_id
+from pydantic import BaseModel, Field
+
 from oki.assets.schemas import (
     AssetCreate,
     AssetResponse,
@@ -20,6 +22,11 @@ from oki.assets.schemas import (
 from oki.assets.service import AssetDetails, AssetService
 from oki.identity.dependencies import current_principal
 from oki.identity.schemas import Principal
+
+
+class ImportUrlRequest(BaseModel):
+    url: str = Field(..., max_length=2048)
+    title: str | None = Field(default=None, max_length=255)
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
@@ -116,6 +123,75 @@ async def simple_upload(
     principal: Principal = Depends(current_principal),
 ) -> SimpleUploadResponse:
     return await _service(request).create_simple_upload(principal, payload)
+
+
+@router.post("/assets/import-url", response_model=AssetResponse)
+async def import_from_url(
+    payload: ImportUrlRequest,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> AssetResponse:
+    """Download a video from a YouTube URL via yt-dlp and create an asset."""
+    from oki.assets.ytdlp import YtDlpImporter
+    from oki.assets.enums import AssetStatus
+    from oki.assets.models import SourceAsset
+    from oki.creators.models import Creator
+    from oki.config import Settings
+    from sqlalchemy import select
+
+    service = _service(request)
+    settings = Settings()
+
+    async with service._uow_factory() as uow:
+        if not principal.memberships:
+            raise ProblemException(
+                status_code=403,
+                code="no_membership",
+                title="No organization membership",
+                detail="You must belong to an organization to import videos.",
+            )
+        organization_id = principal.memberships[0].organization_id
+
+        creator = await uow.session.scalar(
+            select(Creator)
+            .where(Creator.organization_id == organization_id)
+            .limit(1)
+        )
+        creator_id = creator.id if creator else UUID(int=0)
+
+        asset = SourceAsset(
+            organization_id=organization_id,
+            creator_id=creator_id,
+            title=payload.title or "Importing...",
+            status=AssetStatus.DRAFT,
+            created_by_user_id=principal.user_id,
+        )
+        uow.session.add(asset)
+        await uow.session.flush()
+        asset_id = asset.id
+
+    importer = YtDlpImporter(settings)
+    try:
+        result = await importer.download_and_upload(payload.url, asset_id, organization_id)
+    except Exception as e:
+        raise ProblemException(
+            status_code=400,
+            code="import_failed",
+            title="Video import failed",
+            detail=str(e),
+        )
+
+    async with service._uow_factory() as uow:
+        asset = await uow.session.get(SourceAsset, asset_id)
+        asset.storage_key = result["storage_key"]
+        asset.sha256 = result["sha256"]
+        asset.size_bytes = result["file_size"]
+        asset.duration_seconds = result.get("duration")
+        asset.status = AssetStatus.ACTIVE
+        if not payload.title:
+            asset.title = result.get("title", "Imported video")
+        await uow.session.flush()
+        return _response(AssetDetails(asset=asset, upload=None))
 
 
 @router.post("/assets/{asset_id}/finalize", response_model=AssetResponse)

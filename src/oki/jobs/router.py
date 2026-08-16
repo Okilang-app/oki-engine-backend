@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api", tags=["jobs"])
 class CreateJobRequest(BaseModel):
     name: str
     source_asset_id: str | None = None
+    source_url: str | None = None
     source_language: str | None = None
     target_language: str | None = None
 
@@ -59,6 +60,8 @@ async def create_job(
         principal,
         name=payload.name,
         source_asset_id=payload.source_asset_id,
+        source_url=payload.source_url,
+        source_language=payload.source_language,
         target_language=payload.target_language,
     )
     # Fetch job details with project name

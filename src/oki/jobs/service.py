@@ -48,12 +48,14 @@ class JobService:
         *,
         name: str,
         source_asset_id: str | None = None,
+        source_url: str | None = None,
         source_language: str | None = None,
         target_language: str | None = None,
         organization_id: UUID | None = None,
     ) -> LocalizationJob:
         """Create a new Project + LocalizationJob."""
         from oki.assets.models import SourceAsset
+        from oki.assets.enums import AssetStatus
 
         org_id = organization_id or principal.memberships[0].organization_id
         self._authorizer.require(
@@ -84,6 +86,53 @@ class JobService:
                 if asset is not None:
                     asset.localization_job_id = job.id
                     await uow.session.flush()
+
+            # Import from YouTube URL if provided
+            if source_url and not source_asset_id:
+                from oki.assets.ytdlp import YtDlpImporter
+                from oki.config import Settings
+                from oki.creators.models import Creator
+
+                settings = Settings()
+                creator = await uow.session.scalar(
+                    select(Creator)
+                    .where(Creator.organization_id == org_id)
+                    .limit(1)
+                )
+                creator_id = creator.id if creator else UUID(int=0)
+
+                asset = SourceAsset(
+                    organization_id=org_id,
+                    creator_id=creator_id,
+                    title=name,
+                    status=AssetStatus.DRAFT,
+                    localization_job_id=job.id,
+                    created_by_user_id=principal.user_id,
+                )
+                uow.session.add(asset)
+                await uow.session.flush()
+                asset_id = asset.id
+
+                # Download outside the DB transaction
+                importer = YtDlpImporter(settings)
+                try:
+                    result = await importer.download_and_upload(source_url, asset_id, org_id)
+                    asset.storage_key = result["storage_key"]
+                    asset.sha256 = result["sha256"]
+                    asset.size_bytes = result["file_size"]
+                    asset.duration_seconds = result.get("duration")
+                    asset.title = result.get("title", name)
+                    asset.status = AssetStatus.ACTIVE
+                    await uow.session.flush()
+                except Exception as exc:
+                    asset.status = AssetStatus.DELETED
+                    await uow.session.flush()
+                    raise ProblemException(
+                        status_code=400,
+                        code="import_failed",
+                        title="Video import failed",
+                        detail=f"Failed to download video: {exc}",
+                    )
 
             # Store source_language as transient attribute for analyze flow
             job.source_language = source_language or "auto"
@@ -165,9 +214,12 @@ class JobService:
 
             if use_real and asset.storage_key:
                 try:
-                    transcript_data = await self._transcribe_real(
+                    transcript_data, video_duration = await self._transcribe_real(
                         asset, client, settings, language=source_language
                     )
+                    if video_duration and not asset.duration_seconds:
+                        asset.duration_seconds = video_duration
+                        await uow.session.flush()
                 except Exception as exc:
                     # Real API failed — return ERROR, never fake data silently
                     print(f"[analyze_job] Real transcription failed: {exc}")
@@ -334,8 +386,8 @@ class JobService:
         client: "OpenAITranscriptionClient",
         settings: "Settings",
         language: str = "auto",
-    ) -> list[dict]:
-        """Download video, extract audio, call Whisper. Returns segment dicts."""
+    ) -> tuple[list[dict], float]:
+        """Download video, extract audio, call Whisper. Returns (segments, duration_seconds)."""
         s3 = boto3.client(
             "s3",
             endpoint_url=str(settings.s3_endpoint_url) if settings.s3_endpoint_url else None,
@@ -368,7 +420,7 @@ class JobService:
             print(f"[analyze_job] Audio extracted: {audio_path.stat().st_size} bytes")
 
             # Get video duration via ffprobe
-            duration = await self._get_video_duration(ffmpeg, str(video_path))
+            duration = await self._get_video_duration(settings.ffprobe_path, str(video_path))
             print(f"[analyze_job] Video duration: {duration:.1f}s")
 
             # Call Whisper with language hint
@@ -381,18 +433,10 @@ class JobService:
                 duration_seconds=duration,
             )
             print(f"[analyze_job] Whisper returned {len(result.get('segments', []))} segments")
-            return result.get("segments", [])
+            return result.get("segments", []), duration
 
-    async def _get_video_duration(self, ffmpeg: str, video_path: str) -> float:
+    async def _get_video_duration(self, ffprobe: str, video_path: str) -> float:
         """Get video duration via ffprobe or fallback."""
-        from pathlib import Path
-        path = Path(ffmpeg)
-        if path.name.lower() == "ffmpeg.exe":
-            ffprobe = str(path.with_name("ffprobe.exe"))
-        elif path.name.lower() == "ffmpeg":
-            ffprobe = str(path.with_name("ffprobe"))
-        else:
-            ffprobe = str(path.parent / ("ffprobe" + path.suffix))
         try:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
@@ -511,6 +555,7 @@ class JobService:
         from oki.analysis.models import TranscriptSegments
         from oki.sponsors.models import AdSegments, AdSegmentEvidence
         from oki.assets.models import SourceAsset
+        from oki.renders.models import RenderJob
 
         async with self._uow_factory() as uow:
             job = await uow.session.get(LocalizationJob, job_id)
@@ -548,6 +593,12 @@ class JobService:
             await uow.session.execute(
                 delete(AdSegments)
                 .where(AdSegments.job_id == job_id)
+            )
+
+            # Delete render jobs linked to this job
+            await uow.session.execute(
+                delete(RenderJob)
+                .where(RenderJob.job_id == job_id)
             )
 
             # Unlink source asset

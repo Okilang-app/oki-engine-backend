@@ -23,8 +23,15 @@ class AssetTaskRunner:
     called directly or through a Celery/ RQ wrapper.
     """
 
-    def __init__(self, validation_service: AssetValidationService | None = None) -> None:
-        self._validation = validation_service or AssetValidationService()
+    def __init__(
+        self,
+        validation_service: AssetValidationService | None = None,
+        clamav_host: str = "127.0.0.1",
+        clamav_port: int = 3310,
+    ) -> None:
+        self._validation = validation_service or AssetValidationService(
+            clamav_host=clamav_host, clamav_port=clamav_port
+        )
 
     async def validate_source_asset(
         self,

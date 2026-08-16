@@ -17,13 +17,19 @@ ALLOWLISTED_CONTAINERS = {"mp4", "mov", "mkv", "webm", "mxf", "wav", "aiff"}
 class MediaProbe:
     """Run ffprobe and return structured stream/container information."""
 
-    def __init__(self, runner: CommandRunner | None = None) -> None:
+    def __init__(
+        self,
+        runner: CommandRunner | None = None,
+        *,
+        binary: str = "ffprobe",
+    ) -> None:
         self._runner = runner or CommandRunner()
+        self._binary = binary
 
     async def probe(self, path: Path | str) -> dict[str, Any]:
         """Return ffprobe JSON output as a Python dict."""
         cmd = [
-            "ffprobe",
+            self._binary,
             "-v", "error",
             "-show_format",
             "-show_streams",

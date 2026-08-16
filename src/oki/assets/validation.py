@@ -32,8 +32,10 @@ class AssetValidationService:
         self,
         scanner: ClamAVScanner | None = None,
         probe: MediaProbe | None = None,
+        clamav_host: str = "127.0.0.1",
+        clamav_port: int = 3310,
     ) -> None:
-        self._scanner = scanner or ClamAVScanner()
+        self._scanner = scanner or ClamAVScanner(host=clamav_host, port=clamav_port)
         self._probe = probe or MediaProbe()
 
     async def validate(
