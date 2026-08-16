@@ -6,7 +6,7 @@
 
 **Architecture:** Voice profiles and consents are independent domain records checked before every TTS call. Audio and render pipelines are manifest-driven, content-addressed, idempotent, and store all intermediates and QA results.
 
-**Tech Stack:** Prior stages plus OpenAI/Azure speech adapters, ElevenLabs SDK/API, FFmpeg/ffprobe, Demucs, pyloudnorm, NumPy, S3 artifacts.
+**Tech Stack:** Prior stages plus OpenAI/Azure speech adapters, ElevenLabs SDK/API, optional Qwen3-TTS worker, FFmpeg/ffprobe, Audio Separator, pyloudnorm, NumPy, and S3 artifacts.
 
 **Spec:** `docs/superpowers/specs/2026-08-14-oki-localization-backend-design.md`
 
@@ -32,14 +32,15 @@
 - Create: `src/oki/voices/router.py`
 - Create: `src/oki/providers/tts.py`
 - Create: `src/oki/providers/elevenlabs.py`
+- Create: `src/oki/providers/qwen3_tts.py`
 - Create: `migrations/versions/0010_voice_profiles.py`
 - Create: `tests/unit/voices/test_voice_policy.py`
 - Create: `tests/unit/voices/test_pronunciation.py`
 - Create: `tests/contract/providers/test_tts_contract.py`
 
 **Interfaces:**
-- Produces: `VoiceMode`, `VoicePolicy.require(profile, request, agreement, consent, now)`, `PronunciationDictionary.apply`, `TtsProvider.synthesize(...) -> SpeechResult`, OpenAI/Azure and ElevenLabs implementations.
-- Consumes: rights agreement version, voice consent, translation segment version, provider usage.
+- Produces: `VoiceMode`, `VoicePolicy.require(profile, request, agreement, consent, now)`, `PronunciationDictionary.apply`, `TtsProvider.synthesize(...) -> SpeechResult`, and OpenAI/Azure, ElevenLabs, and optional Qwen3-TTS implementations.
+- Consumes: rights agreement version, current voice consent, translation segment version, approved model registry, and provider usage.
 
 - [ ] **Step 1: Write fail-closed voice tests**
 
@@ -63,7 +64,7 @@ Expected: fail on missing policy/adapters.
 
 - [ ] **Step 3: Implement licensed profile coverage and adapters**
 
-A profile covers provider, voice ID, mode, languages, territories, platforms, start/end dates, contract artifact, and allowed uses. Clone mode additionally resolves current creator consent. Human-actor mode references recording-use agreement. Pronunciation entries support Oki, creator names, brands, and specialist terms with language-scoped phonetic/SSML forms.
+A profile covers provider, voice ID/model checkpoint, mode, languages, territories, platforms, start/end dates, contract artifact, and allowed uses. Qwen3-TTS neutral/custom checkpoints and clone-capable base checkpoints are configured as distinct provider capabilities; no runtime model download is allowed in production. Clone mode additionally resolves current creator consent at command and worker start. Human-actor mode references recording-use agreement. Pronunciation entries support Oki, creator names, brands, and specialist terms with language-scoped phonetic/SSML forms.
 
 - [ ] **Step 4: Run voice/provider tests**
 
@@ -133,14 +134,14 @@ Expected: pass and critical failures remain in `DUBBING_RUNNING`/`AUDIO_REVIEW` 
 
 **Interfaces:**
 - Produces: `AudioMixPlan`, `SourceSeparator`, `AudioMixer.mix`, `AudioQa.evaluate`, `AudioService.create_mix`.
-- Consumes: source stems or original audio, approved dub segments, FFmpeg runner, Demucs runner, object store.
+- Consumes: source stems or original audio, approved dub segments, FFmpeg runner, versioned `SourceSeparator`, object store.
 
 - [ ] **Step 1: Write stem preference and QA tests**
 
 ```python
-async def test_supplied_stems_skip_source_separation(audio_service, asset_with_stems, demucs_spy) -> None:
+async def test_supplied_stems_skip_source_separation(audio_service, asset_with_stems, separator_spy) -> None:
     await audio_service.create_mix(asset_with_stems.id)
-    assert demucs_spy.calls == []
+    assert separator_spy.calls == []
 
 
 @pytest.mark.parametrize("fixture,code", [("clipped.wav", "clipping"), ("long_silence.wav", "unplanned_silence"), ("cut_word.wav", "possible_cut_word")])
@@ -155,7 +156,7 @@ Expected: fail on missing mix/separation modules.
 
 - [ ] **Step 3: Implement two audio paths and mandatory no-stem review**
 
-Prefer supplied dialogue/music/ambience stems. Otherwise run versioned Demucs separation and set `human_qa_required=true`. Align localized speech, preserve music/ambience, duck under dialogue, normalize loudness, and check clipping, level jumps, unplanned silence, cut words, segment overflow, and true peak. Upload source/separated/working/final artifacts distinctly.
+Prefer supplied dialogue/music/ambience stems. Otherwise run Audio Separator with an explicitly approved model/checksum and set `human_qa_required=true`. Align localized speech, preserve music/ambience, duck under dialogue, normalize loudness, and check clipping, level jumps, unplanned silence, cut words, segment overflow, and true peak. Persist separator/model versions and upload source/separated/working/final artifacts distinctly.
 
 - [ ] **Step 4: Run audio tests**
 

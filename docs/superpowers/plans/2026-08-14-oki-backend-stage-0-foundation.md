@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Create the runnable FastAPI/PostgreSQL 18/Celery/Keycloak foundation, shared contracts, workflow kernel, and authorization boundary used by every later stage.
+**Goal:** Create the runnable FastAPI/PostgreSQL 18/Hatchet/Keycloak foundation, shared contracts, workflow kernel, and authorization boundary used by every later stage.
 
-**Architecture:** A modular monolith exposes FastAPI routes and deploys queue-specific Celery workers from the same package. PostgreSQL is authoritative; Redis transports tasks and caches only disposable state.
+**Architecture:** A modular monolith exposes FastAPI routes and deploys queue-specific Hatchet workers from the same package. PostgreSQL is authoritative; Hatchet provides durable execution, while Valkey caches disposable state only.
 
-**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2 async, Alembic, PostgreSQL 18, Celery, Redis, Keycloak OIDC, pytest, testcontainers, Ruff, mypy, Docker Compose.
+**Tech Stack:** Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2 async, Alembic, PostgreSQL 18, Hatchet Python SDK, Valkey, SeaweedFS S3, Keycloak OIDC, pytest, testcontainers, Ruff, mypy, Docker Compose.
 
 **Spec:** `docs/superpowers/specs/2026-08-14-oki-localization-backend-design.md`
 
@@ -75,7 +75,7 @@ Expected: collection fails because `oki` is not importable.
 
 - [ ] **Step 3: Define dependencies and the application kernel**
 
-`pyproject.toml` must define the `src` package, Python `>=3.12,<3.14`, FastAPI, Uvicorn, Pydantic Settings, SQLAlchemy asyncpg, Alembic, Celery Redis, Authlib/PyJWT cryptography, HTTPX, boto3, structlog, OpenTelemetry, Sentry, and test/type/lint groups. `create_app` must install correlation, problem, and structured-request middleware; register `/health`; and expose `/openapi.json`.
+`pyproject.toml` must define the `src` package, Python `>=3.12,<3.14`, FastAPI, Uvicorn, Pydantic Settings, SQLAlchemy asyncpg, Alembic, Hatchet SDK, a Valkey-compatible client, Authlib/PyJWT cryptography, HTTPX, boto3, structlog, OpenTelemetry, Sentry-compatible reporting, and test/type/lint groups. Heavy ML packages remain isolated from the API environment. `create_app` must install correlation, problem, and structured-request middleware; register `/health`; and expose `/openapi.json`.
 
 ```python
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -111,7 +111,7 @@ Expected: both tests pass.
 
 **Interfaces:**
 - Consumes: `Settings` and SQLAlchemy `Base` from Task 1.
-- Produces: `UnitOfWork`, `TimestampMixin`, `VersionMixin`, database readiness, and containers named `postgres`, `redis`, `minio`, `keycloak`, and `clamav`.
+- Produces: `UnitOfWork`, `TimestampMixin`, `VersionMixin`, database readiness, and containers named `postgres`, `valkey`, `seaweedfs`, `keycloak`, and `clamav`.
 
 - [ ] **Step 1: Write database transaction and readiness tests**
 
@@ -142,7 +142,7 @@ Expected: exit 0.
 Run: `uv run pytest tests/integration/test_database.py tests/integration/test_health_dependencies.py -q`  
 Expected: pass.
 
-### Task 3: Idempotency, transactional outbox, Celery, and workflow kernel
+### Task 3: Idempotency, transactional outbox, Hatchet, and workflow kernel
 
 **Files:**
 - Create: `src/oki/jobs/enums.py`
@@ -151,6 +151,7 @@ Expected: pass.
 - Create: `src/oki/jobs/outbox.py`
 - Create: `src/oki/jobs/state_machine.py`
 - Create: `src/oki/jobs/tasks.py`
+- Create: `src/oki/jobs/hatchet.py`
 - Create: `src/oki/worker.py`
 - Create: `migrations/versions/0002_workflow_kernel.py`
 - Create: `tests/unit/jobs/test_state_machine.py`
@@ -158,7 +159,7 @@ Expected: pass.
 - Create: `tests/integration/jobs/test_outbox.py`
 
 **Interfaces:**
-- Produces: `WorkflowState`, `WorkflowEvent`, `TransitionDecision`, `WorkflowStateMachine.transition(...)`, `IdempotencyService.execute(...)`, `OutboxPublisher.publish_batch(...)`, and Celery app `oki.worker.app`.
+- Produces: `WorkflowState`, `WorkflowEvent`, `TransitionDecision`, `WorkflowStateMachine.transition(...)`, `IdempotencyService.execute(...)`, `OutboxPublisher.publish_batch(...)`, Hatchet workflow/task registrations, and worker entry point `oki.worker`.
 - Produces tables: `projects`, `localization_jobs`, `workflow_transitions`, `task_runs`, `task_checkpoints`, `dead_letters`, `outbox_events`, `provider_usage`.
 - Consumes: `UnitOfWork`, UUID/time types, and problem errors.
 
@@ -189,7 +190,7 @@ Expected: fail on missing workflow classes.
 
 - [ ] **Step 3: Implement exact state machine and task records**
 
-Implement the primary sequence from `CREATOR_LEAD` through `ARCHIVED` and exceptional `BLOCKED`, `FAILED`, `CANCELLED`, `RIGHTS_REVOKED`. Every transition persists actor, guard result, reason, correlation ID, and prior resumable state. Outbox records are inserted in the same transaction as domain state. Celery queues are `analysis`, `translation`, `dubbing`, `audio`, `render`, `shorts`, `publishing`, `analytics`, and `notifications`.
+Implement the primary sequence from `CREATOR_LEAD` through `ARCHIVED` and exceptional `BLOCKED`, `FAILED`, `CANCELLED`, `RIGHTS_REVOKED`. Every transition persists actor, guard result, reason, correlation ID, prior resumable state, and Hatchet execution identifiers where applicable. Outbox records are inserted in the same transaction as domain state. Hatchet task groups are `analysis`, `translation`, `dubbing`, `audio`, `render`, `shorts`, `publishing`, `analytics`, and `notifications`; concurrency and rate limits are keyed by group/provider/creator as required. Hatchet success never advances Oki state without the corresponding guarded Oki transaction.
 
 - [ ] **Step 4: Run migration and focused tests**
 
@@ -247,5 +248,5 @@ Expected: exit 0.
 
 ## Stage 0 Acceptance
 
-Run: `uv run pytest tests/unit tests/integration/test_database.py tests/integration/test_health_dependencies.py tests/integration/jobs tests/integration/identity -q`  
-Expected: pass with PostgreSQL 18/Redis/Keycloak test dependencies. `/health` is public, `/ready` reports dependencies, protected endpoints reject invalid tokens, idempotency returns one result, and invalid workflow shortcuts are impossible.
+Run: `uv run pytest tests/unit tests/integration/test_database.py tests/integration/test_health_dependencies.py tests/integration/jobs tests/integration/identity -q`
+Expected: pass with PostgreSQL 18/Valkey/Hatchet/Keycloak test dependencies. `/health` is public, `/ready` reports dependencies, protected endpoints reject invalid tokens, idempotency returns one result, and invalid workflow shortcuts are impossible.

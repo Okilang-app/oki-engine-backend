@@ -4,9 +4,9 @@
 
 **Goal:** Analyse validated media into an auditable unified timeline, require human sponsor review, and produce versioned translations that pass the complete linguistic QA gate.
 
-**Architecture:** Provider-neutral analysis and language protocols isolate OpenAI/Azure OpenAI. Deterministic tools produce scenes/OCR/audio maps; all model outputs and human revisions are versioned in PostgreSQL with artifact references in S3.
+**Architecture:** Provider-neutral analysis and language protocols isolate hosted OpenAI/Azure calls and local worker tools. WhisperX, PySceneDetect, PaddleOCR, FFmpeg, and OpenTimelineIO adapters produce versioned candidates; all outputs and human revisions are persisted in PostgreSQL with artifact references in S3.
 
-**Tech Stack:** Prior stages plus OpenAI Python SDK with Azure/OpenAI configuration, PySceneDetect, Tesseract, FFmpeg filters, provider contract fixtures.
+**Tech Stack:** Prior stages plus OpenAI Python SDK with Azure/OpenAI configuration, WhisperX, PySceneDetect, PaddleOCR, OpenTimelineIO, FFmpeg filters, and provider contract fixtures.
 
 **Spec:** `docs/superpowers/specs/2026-08-14-oki-localization-backend-design.md`
 
@@ -79,14 +79,16 @@ Expected: pass against deterministic HTTP contract fixtures; live tests remain m
 - Create: `src/oki/analysis/scenes.py`
 - Create: `src/oki/analysis/ocr.py`
 - Create: `src/oki/analysis/audio_map.py`
+- Create: `src/oki/analysis/transcription.py`
+- Create: `src/oki/analysis/otio.py`
 - Create: `migrations/versions/0007_analysis_timeline.py`
 - Create: `tests/unit/analysis/test_timeline.py`
 - Create: `tests/integration/analysis/test_analysis_job.py`
 - Create: `tests/integration/analysis/test_transcript_revision.py`
 
 **Interfaces:**
-- Produces: `AnalysisService.start`, `get_timeline`, `revise_transcript_segment`; Celery canvas `run_analysis_pipeline`; timeline schemas for transcript, words, speakers, languages, scenes, OCR, entities, safety, music, silence, and sponsor candidates.
-- Consumes: validated asset/proxy/audio artifacts, providers, Rights Gate, state machine, object store.
+- Produces: `AnalysisService.start`, `get_timeline`, `revise_transcript_segment`; Hatchet workflow `run_analysis_pipeline`; versioned WhisperX/PySceneDetect/PaddleOCR adapters; OpenTimelineIO export; timeline schemas for transcript, words, speakers, languages, scenes, OCR, entities, safety, music, silence, and sponsor candidates.
+- Consumes: validated asset/proxy/audio artifacts, providers, Rights Gate, state machine, object store, and approved model/tool registry.
 
 - [ ] **Step 1: Write timeline and revision tests**
 
@@ -110,7 +112,7 @@ Expected: fail on missing timeline models/services.
 
 - [ ] **Step 3: Implement parallel analysis fan-out and merge**
 
-After a rights recheck, run transcription/diarization/language-code-switch, scene detection, sampled OCR, entity/safety classification, and music/silence mapping as idempotent child tasks. Merge by asset analysis version. Persist tool/model versions and confidence. Expose timeline read and permissioned transcript/text/timestamp revision endpoints.
+After a rights recheck, run WhisperX transcription/alignment/diarization, language-code-switch analysis, PySceneDetect, sampled PaddleOCR, entity/safety classification, and music/silence mapping as idempotent Hatchet child tasks. Merge by asset analysis version. Persist tool/model/checkpoint versions, parameters, input/output checksums, confidence, and documented limitation flags for overlap, diarization, alignment, and multilingual uncertainty. Expose unified timeline reads, permissioned transcript/text/timestamp revisions, and an OTIO interchange export without making OTIO authoritative.
 
 - [ ] **Step 4: Apply migration and run analysis tests**
 

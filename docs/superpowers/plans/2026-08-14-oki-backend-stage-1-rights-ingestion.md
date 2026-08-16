@@ -4,9 +4,9 @@
 
 **Goal:** Onboard creators, version legal rights, fail closed through a reusable Rights Gate, and ingest immutable validated master media through resumable S3 uploads.
 
-**Architecture:** Creator, agreement, grant, consent, rights evaluation, asset, and upload records live in PostgreSQL. S3/MinIO holds immutable versioned objects; every processing command calls the same rights evaluator before queueing or billing.
+**Architecture:** Creator, agreement, grant, consent, rights evaluation, asset, and upload records live in PostgreSQL. tusd transfers resumable bytes into S3/SeaweedFS; Oki authenticates hooks and alone validates and registers immutable versions. Every processing command calls the same rights evaluator before dispatch or billing.
 
-**Tech Stack:** Stage 0 stack plus boto3, HTTPX, ffprobe/FFmpeg, ClamAV, python-magic, multipart S3 uploads.
+**Tech Stack:** Stage 0 stack plus tusd, boto3, HTTPX, ffprobe/FFmpeg, ClamAV, python-magic, and authenticated tus HTTP hooks.
 
 **Spec:** `docs/superpowers/specs/2026-08-14-oki-localization-backend-design.md`
 
@@ -120,11 +120,12 @@ The pure evaluator checks every dimension without I/O. The service loads current
 Run: `uv run pytest tests/unit/rights/test_gate.py tests/integration/rights/test_revocation.py -q`  
 Expected: pass, including assertion that denied work creates zero provider-usage rows.
 
-### Task 3: S3 multipart uploads, immutable assets, and checksum deduplication
+### Task 3: tusd resumable uploads, immutable assets, and checksum deduplication
 
 **Files:**
 - Create: `src/oki/storage/protocol.py`
 - Create: `src/oki/storage/s3.py`
+- Create: `src/oki/assets/tus_hooks.py`
 - Create: `src/oki/assets/enums.py`
 - Create: `src/oki/assets/models.py`
 - Create: `src/oki/assets/schemas.py`
@@ -136,34 +137,36 @@ Expected: pass, including assertion that denied work creates zero provider-usage
 - Create: `tests/integration/assets/test_deduplication.py`
 
 **Interfaces:**
-- Produces: `ObjectStore` protocol; `S3ObjectStore`; `AssetService.create_upload`, `presign_part`, `complete_upload`, `register_stem`; SOW upload URL/completion endpoints.
-- Produces tables: `source_assets`, `asset_versions`, `asset_uploads`, `upload_parts`, `asset_stems`, `media_artifacts`.
-- Consumes: approved rights evaluation, organization/creator scope, settings.
+- Produces: `ObjectStore` protocol; `S3ObjectStore`; `AssetService.create_upload`, `ingest_tus_hook`, `finalize_upload`, `register_stem`; authenticated tus hook and SOW upload status/completion endpoints.
+- Produces tables: `source_assets`, `asset_versions`, `asset_uploads`, `upload_events`, `asset_stems`, `media_artifacts`.
+- Consumes: approved rights evaluation, organization/creator scope, tus hook authentication, object-store metadata, and settings.
 
 - [ ] **Step 1: Write interrupted upload, immutable key, and duplicate tests**
 
 ```python
-async def test_completed_parts_can_resume(asset_client, upload) -> None:
-    await asset_client.record_part(upload.id, 1, "etag-one")
+async def test_replayed_out_of_order_tus_hooks_preserve_monotonic_offset(asset_client, upload) -> None:
+    await asset_client.ingest_hook(upload.id, event_id="event-2", offset=20)
+    await asset_client.ingest_hook(upload.id, event_id="event-1", offset=10)
+    await asset_client.ingest_hook(upload.id, event_id="event-2", offset=20)
     status = await asset_client.get_upload(upload.id)
-    assert status.completed_parts == [1]
-    assert status.next_part == 2
+    assert status.offset == 20
+    assert status.event_count == 2
 
 
 async def test_duplicate_checksum_returns_existing_asset(asset_service, completed_asset) -> None:
-    result = await asset_service.complete_upload(completed_asset.upload_id, completed_asset.sha256)
+    result = await asset_service.finalize_upload(completed_asset.upload_id, completed_asset.sha256)
     assert result.asset_id == completed_asset.asset_id
     assert result.duplicate is True
 ```
 
-- [ ] **Step 2: Run upload tests against MinIO**
+- [ ] **Step 2: Run upload tests against tusd and SeaweedFS S3**
 
 Run: `uv run pytest tests/unit/assets tests/integration/assets/test_resumable_upload.py tests/integration/assets/test_deduplication.py -q`  
 Expected: fail on missing object-store and asset service.
 
-- [ ] **Step 3: Implement multipart lifecycle and write-once source policy**
+- [ ] **Step 3: Integrate tus lifecycle and write-once source policy**
 
-Upload creation validates creator/agreement linkage and returns signed part URLs. Completion verifies recorded parts, S3 checksum/size, and creator-scoped SHA-256 uniqueness. Keys follow `/creators/{creator_id}/sources/{asset_id}/{version}/`. A replacement creates a new version/key; no source overwrite method exists.
+Upload creation validates creator/agreement linkage and returns a tus endpoint plus scoped upload token/metadata. The blocking `pre-create` hook revalidates authorization and chooses a collision-resistant creator/version upload identity. Hook ingestion is authenticated, replay-safe, tenant-bound, and order-independent; it upserts by tus upload/event ID and never decreases the recorded offset. `post-finish` schedules finalization, which verifies S3 object size/SHA-256, ClamAV and media validation, and creator-scoped checksum uniqueness before immutable registration. Keys follow `/creators/{creator_id}/sources/{asset_id}/{version}/`. A replacement creates a new version/key; no source overwrite method exists.
 
 - [ ] **Step 4: Run asset tests**
 
@@ -185,7 +188,7 @@ Expected: pass.
 - Create: `tests/integration/assets/test_ingestion_pipeline.py`
 
 **Interfaces:**
-- Produces: `CommandRunner`, `MediaProbe`, `MediaValidationResult`, `AssetValidationService.validate(asset_version_id)`, Celery task `validate_source_asset`.
+- Produces: `CommandRunner`, `MediaProbe`, `MediaValidationResult`, `AssetValidationService.validate(asset_version_id)`, Hatchet task `validate_source_asset`.
 - Produces tables: `media_streams`, `asset_validation_results`.
 - Consumes: `ObjectStore`, ClamAV socket, ffprobe/FFmpeg binaries, Rights Gate, workflow transitions.
 

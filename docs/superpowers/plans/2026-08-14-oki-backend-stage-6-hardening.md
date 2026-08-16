@@ -27,8 +27,8 @@
 - Create: `src/oki/notifications/enums.py`
 - Create: `src/oki/notifications/models.py`
 - Create: `src/oki/notifications/service.py`
-- Create: `src/oki/notifications/email.py`
-- Create: `src/oki/notifications/telegram.py`
+- Create: `src/oki/notifications/apprise.py`
+- Create: `src/oki/notifications/in_app.py`
 - Create: `src/oki/notifications/tasks.py`
 - Create: `src/oki/notifications/router.py`
 - Create: `migrations/versions/0021_notifications.py`
@@ -37,8 +37,8 @@
 - Create: `tests/integration/notifications/test_expiry_schedules.py`
 
 **Interfaces:**
-- Produces: `NotificationService.enqueue`, `DeliveryAdapter`, email/Telegram/in-app adapters; scheduled rights/campaign/OAuth/review/payout checks.
-- Consumes: outbox events, user preferences, creator assignments, scheduler, audit.
+- Produces: `NotificationService.enqueue`, `DeliveryAdapter`, Apprise-backed email/Telegram adapters, in-app adapter, and scheduled rights/campaign/OAuth/review/payout checks.
+- Consumes: outbox events, user preferences, creator assignments, Hatchet scheduler, and audit.
 
 - [ ] **Step 1: Write routing, duplicate, and expiry tests**
 
@@ -61,7 +61,7 @@ Expected: fail on missing notification modules.
 
 - [ ] **Step 3: Implement required triggers and adapters**
 
-Support rights/campaign expiration, missing files, failed/dead-letter jobs, review task, creator approval, publication error/claim, OAuth expiry/revocation, and payout approval. Email/Telegram are real configurable HTTP/SMTP adapters; in-app notifications always persist. Delivery retries only transient errors and exposes status.
+Support rights/campaign expiration, missing files, failed/dead-letter jobs, review task, creator approval, publication error/claim, OAuth expiry/revocation, and payout approval. Apprise provides real configurable email/Telegram delivery behind the Oki `DeliveryAdapter`; in-app notifications always persist. Oki records channel/recipient/event idempotency, preferences, status, attempts, and audit. Delivery retries only transient errors and never places credentials in notification records or logs.
 
 - [ ] **Step 4: Run notification tests**
 
@@ -85,7 +85,7 @@ Expected: pass.
 
 **Interfaces:**
 - Produces: `configure_logging`, `redact_event`, `configure_tracing`, metric instruments and `/metrics`.
-- Consumes: FastAPI/Celery lifecycle, correlation/job/task/provider fields, Sentry DSN when configured.
+- Consumes: FastAPI/Hatchet lifecycle, correlation/job/task/provider fields, Sentry-compatible DSN when configured.
 
 - [ ] **Step 1: Write secret-redaction and trace-continuity tests**
 
@@ -130,7 +130,7 @@ Expected: exit 0.
 - Create: `.github/workflows/ci.yml`
 
 **Interfaces:**
-- Produces: Redis-backed rate-limit dependency, upload limits/normalization, security-event recorder, CI security checks.
+- Produces: Valkey-backed rate-limit dependency, upload limits/normalization, security-event recorder, CI security checks.
 - Consumes: Keycloak Principal, object store, ClamAV, PostgreSQL roles, environment settings.
 
 - [ ] **Step 1: Write authorization and immutability tests**

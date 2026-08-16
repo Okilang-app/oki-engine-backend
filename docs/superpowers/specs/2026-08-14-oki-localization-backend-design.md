@@ -27,9 +27,9 @@ The controlling invariants are:
 
 - Backend APIs, database schema, migrations, workers, orchestration, storage integration, external-provider adapters, monitoring configuration, deployment configuration, tests, and backend/operations documentation.
 - Backend support for employee dashboards and the creator approval portal: authorization, data, review packages, secure review access, decisions, comments, and notifications.
-- Real production adapters for OpenAI-compatible OpenAI and Azure OpenAI deployments, ElevenLabs, S3-compatible storage, Keycloak OIDC, YouTube OAuth/Data API, email, and Telegram.
-- Local deterministic media processing through FFmpeg/ffprobe, PySceneDetect, Tesseract, Demucs, and OpenCV where applicable.
-- Portable Docker deployment with PostgreSQL 18, Redis, MinIO, Keycloak, ClamAV, API, scheduler, worker pools, and observability services.
+- Real production adapters for OpenAI-compatible OpenAI and Azure OpenAI deployments, ElevenLabs, optional Qwen3-TTS, S3-compatible storage, Keycloak OIDC, YouTube OAuth/Data API, and Apprise-backed email/Telegram delivery.
+- Local deterministic media processing through FFmpeg/ffprobe, WhisperX, PySceneDetect, PaddleOCR, Audio Separator, OpenTimelineIO, and OpenCV where applicable.
+- Portable Docker deployment with PostgreSQL 18, Hatchet, Valkey, SeaweedFS S3, Keycloak, ClamAV, API, scheduler, worker pools, and observability services.
 
 ### 2.2 Not included in this backend repository
 
@@ -41,7 +41,7 @@ The controlling invariants are:
 
 ### 3.1 Deployment shape
 
-Use a modular FastAPI control plane with independently deployable Celery worker pools. PostgreSQL 18 is the authoritative system of record. Redis is a disposable broker, cache, rate-limit store, and short-lived coordination layer. S3-compatible object storage holds contracts and media artifacts.
+Use a modular FastAPI control plane with independently deployable Hatchet worker pools. PostgreSQL 18 is the authoritative Oki system of record. Hatchet provides durable task execution against its own PostgreSQL database; Valkey stores disposable cache, rate-limit, and short-lived coordination data only. S3-compatible object storage holds contracts and media artifacts.
 
 The API and workers share versioned domain packages and one relational model. This avoids distributed rights and audit state while allowing expensive workloads to scale by queue.
 
@@ -53,21 +53,21 @@ YouTube OAuth is separate from application identity. It grants channel-specific 
 
 ### 3.3 Workflow orchestration
 
-PostgreSQL stores the explicit workflow state machine, transitions, attempts, checkpoints, costs, cancellation flags, dead-letter entries, and idempotency records. Celery executes stateless or checkpointed activities. Workers never infer permission from queue placement; they re-evaluate current rights and approvals before protected or billable work.
+PostgreSQL stores the explicit Oki workflow state machine, transitions, attempts, checkpoints, costs, cancellation flags, dead-letter entries, and idempotency records. Hatchet schedules, retries, waits, rate-limits, and observes stateless or checkpointed activities. Workers never infer permission from task placement or Hatchet status; they re-evaluate current rights and approvals before protected or billable work.
 
 ### 3.4 AI and media providers
 
-- One OpenAI-compatible adapter supports OpenAI and Azure OpenAI for model-based transcription, language analysis, translation, QA, sponsor detection, clip scoring, and licensed neutral speech where configured.
-- ElevenLabs supports licensed neutral speech and creator-cloned voice only when a valid, separate creator consent covers the requested use.
+- One OpenAI-compatible adapter supports OpenAI and Azure OpenAI for model-based language analysis, translation, QA, sponsor detection, and clip scoring.
+- TTS adapters support licensed neutral speech through OpenAI/Azure, ElevenLabs, or Qwen3-TTS; creator-cloned voice is available only when a valid, separate creator consent covers the requested use.
 - Provider selection is configuration and persisted per operation. Every call records provider, model/deployment, parameters, latency, token/audio usage, cost, request correlation, and output artifact.
-- Local media tools handle deterministic extraction, validation, scene detection, OCR, source separation, mixing, rendering, crop tracking, and automated technical QA.
+- Local media tools handle deterministic extraction and validation, WhisperX transcription/alignment/diarization, PySceneDetect scenes, PaddleOCR text, Audio Separator stems, OpenTimelineIO interchange, mixing, rendering, crop tracking, and automated technical QA.
 
 ## 4. Runtime Topology
 
 | Component | Responsibility | Scale unit |
 |---|---|---|
 | FastAPI API | REST API, authorization, validation, presigned URLs, reviews, workflow commands, reporting | HTTP replicas |
-| Celery scheduler | Scheduled rights-expiry, campaign-expiry, analytics, notification, and recovery tasks | Singleton with lease |
+| Hatchet scheduler/control plane | Durable tasks, retries, event waits, schedules, rate/concurrency limits, operational task telemetry | Internal service |
 | Analysis workers | ffprobe, proxy, audio extraction, transcription, diarization, language, scenes, OCR, entities, safety, music/silence, sponsor candidates | Queue replicas |
 | Translation workers | Machine translation, context assembly, back-translation, automated QA | Queue replicas |
 | Dubbing workers | TTS, pronunciation, timing, per-segment regeneration, audio QA | Queue replicas |
@@ -76,13 +76,13 @@ PostgreSQL stores the explicit workflow state machine, transitions, attempts, ch
 | Shorts workers | Candidate scoring, clips, crop/face tracking, subtitle styling, safe-zone checks | CPU/GPU replicas |
 | Publishing workers | YouTube private upload, captions/thumbnail, polling, scheduling, public release | Low-concurrency replicas |
 | Analytics workers | YouTube/Oki ingestion, attribution, metrics, reports, payouts | Queue replicas |
-| Notification workers | Email, Telegram, in-app events | Queue replicas |
-| PostgreSQL 18 | Authoritative relational and workflow state | HA database |
-| Redis | Celery broker/result transport, rate limits, cache, locks with bounded TTL | HA Redis |
-| S3/MinIO | Versioned contracts and media artifacts | Object storage |
+| Notification workers | Oki outbox/preferences/idempotency with Apprise email, Telegram, and other delivery adapters | Queue replicas |
+| PostgreSQL 18 | Authoritative Oki relational/workflow state plus a separate Hatchet database | HA database |
+| Valkey | Disposable rate limits, cache, and bounded-TTL coordination | HA cache |
+| S3/SeaweedFS | Versioned contracts and media artifacts; tusd resumable-upload backing store | Object storage |
 | Keycloak | OIDC, MFA, sessions, recovery | HA identity service |
 | ClamAV | Upload malware scanning | Scanner replicas |
-| OpenTelemetry/Sentry | Traces, metrics, structured errors and alerts | Collector/service |
+| OpenTelemetry/Prometheus/Grafana/Sentry | Traces, metrics, structured errors and alerts; Sentry may be replaced by a compatible self-hosted sink | Collector/services |
 
 ## 5. Domain Modules
 
@@ -292,8 +292,8 @@ Command endpoints require `Idempotency-Key`. Long-running commands return `202 A
 ## 11. Reliability and Cost Controls
 
 - Database uniqueness on idempotency scope/key, source checksum/creator, render manifest hash, publication job/channel/mode/render, provider operation key, conversion source/event id, and payout run inputs.
-- Transactional outbox publishes queue events only after domain commits.
-- Workers claim task runs atomically, heartbeat, checkpoint, and use bounded leases.
+- Transactional outbox dispatches Hatchet workflow events only after Oki domain commits.
+- Workers claim Oki task runs atomically, heartbeat, checkpoint, and use bounded leases; Hatchet execution identifiers are persisted for operational correlation.
 - Retry only transient failures with bounded exponential backoff and jitter. Rights, authorization, validation, consent, approval, unsupported media, and cost-limit errors are permanent.
 - Exhausted tasks create dead-letter records. Replay is permissioned, audited, and rights-gated.
 - Cancellation is cooperative between segments and FFmpeg stages; process groups receive graceful termination before forced termination.
@@ -308,7 +308,7 @@ Command endpoints require `Idempotency-Key`. Long-running commands return `202 A
 - Creator/project ABAC on every protected query and object URL.
 - Encrypted YouTube refresh tokens with key rotation metadata and immediate revocation support.
 - Short-lived signed object URLs and least-privilege bucket policies.
-- Redis-backed rate limiting, Pydantic validation, content length limits, filename/key normalization, MIME plus magic-byte and codec validation.
+- Valkey-backed rate limiting, Pydantic validation, content length limits, filename/key normalization, MIME plus magic-byte and codec validation.
 - ClamAV scan before uploaded media becomes available to workers.
 - Structured security events, dependency/container scanning, staging/production separation.
 - Append-only audit enforcement through application permissions and a database role that cannot update/delete audit rows.
@@ -316,9 +316,9 @@ Command endpoints require `Idempotency-Key`. Long-running commands return `202 A
 ## 13. Observability
 
 - JSON logs with timestamp, service, environment, correlation, actor, creator/project/job/task, provider, and error code; sensitive text/tokens are redacted.
-- OpenTelemetry spans from API command through outbox, Celery task, provider call, artifact, review, and publication.
-- Metrics: API latency/error rate, task duration/failure/retry, queue depth/age, worker utilization, provider latency/usage/cost, storage usage, render throughput, rights denials, approval time, publication status, analytics freshness.
-- Sentry aggregates API/worker failures with release and trace identifiers.
+- OpenTelemetry spans from API command through outbox, Hatchet workflow/task, provider call, artifact, review, and publication.
+- Metrics: API latency/error rate, task duration/failure/retry, Hatchet queue depth/age, worker utilization, provider latency/usage/cost, storage usage, render throughput, rights denials, approval time, publication status, analytics freshness.
+- Sentry or a compatible self-hosted error sink aggregates API/worker failures with release and trace identifiers.
 - Alerts cover rights/publication anomalies, queue backlog, repeated worker/provider failures, cost limits, backup failure, storage pressure, OAuth expiry/revocation, platform claims, and stale analytics.
 
 ## 14. Verification Plan
@@ -329,7 +329,7 @@ Test no agreement; pending, expired, revoked, terminated, and superseded agreeme
 
 ### 14.2 Media
 
-Test resumable multipart interruption; part retry; corrupt content; malware; duplicate checksum; unsupported codec; missing audio; long video; multiple speakers; music; multiple sponsors; immutable original; proxy/thumbnail/audio extraction; stems and no-stems paths; and actionable ffprobe/FFmpeg errors.
+Test interrupted tus upload and resume; replayed/out-of-order tus hooks; corrupt content; malware; duplicate checksum; unsupported codec; missing audio; long video; multiple speakers; music; multiple sponsors; immutable original; proxy/thumbnail/audio extraction; stems and no-stems paths; and actionable ffprobe/FFmpeg errors.
 
 ### 14.3 Analysis, translation, and dubbing
 
@@ -398,10 +398,11 @@ A project-level agent context file directs future sessions to query `graphify-ou
 ## 18. Resolved Decisions and External Prerequisites
 
 - Database: PostgreSQL 18.
-- Orchestration: Celery with Redis; PostgreSQL is the workflow source of truth.
+- Orchestration: Hatchet for durable execution; Oki PostgreSQL remains the business workflow source of truth.
 - Identity: Keycloak OIDC.
-- Object storage: S3-compatible; MinIO for local portable deployment.
-- AI: OpenAI-compatible abstraction supporting OpenAI and Azure OpenAI; ElevenLabs for appropriately licensed voice profiles.
+- Cache/rate limits: Valkey; disposable data only.
+- Object storage: S3-compatible; SeaweedFS S3 for local portable deployment; tusd for resumable transport.
+- AI/media: OpenAI-compatible abstraction supporting OpenAI and Azure OpenAI; ElevenLabs and optional Qwen3-TTS for appropriately licensed voice profiles; versioned local open-source media workers as recorded in `docs/architecture/open-source-integration-strategy.md`.
 - Publication: YouTube OAuth/Data API with encrypted tokens and private-first behavior.
 - Deployment: portable Docker baseline.
-- Required for live external acceptance: OpenAI or Azure OpenAI credentials/deployment names, ElevenLabs credentials and permitted voice IDs where used, S3 credentials outside local MinIO, Keycloak production settings, YouTube OAuth client credentials and an authorized test channel, email/Telegram credentials if those channels are enabled, and Oki attribution-event source credentials/schema.
+- Required for live external acceptance: OpenAI or Azure OpenAI credentials/deployment names, ElevenLabs credentials and permitted voice IDs where used, approved local model snapshots/checksums, production S3 credentials, Keycloak production settings, YouTube OAuth client credentials and an authorized test channel, email/Telegram credentials if those channels are enabled, and Oki attribution-event source credentials/schema.
