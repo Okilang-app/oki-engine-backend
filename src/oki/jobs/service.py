@@ -187,9 +187,10 @@ class JobService:
                 select(SourceAsset).where(SourceAsset.localization_job_id == job.id)
             )
             if asset is None:
+                # Fallback: any asset uploaded to this project
                 asset = await uow.session.scalar(
                     select(SourceAsset)
-                    .where(SourceAsset.organization_id == org_id)
+                    .where(SourceAsset.project_id == job.project_id)
                     .order_by(SourceAsset.created_at.desc())
                     .limit(1)
                 )
@@ -198,7 +199,7 @@ class JobService:
                     status_code=400,
                     code="no_asset",
                     title="No source asset available",
-                    detail="Cannot analyze a job without a linked source asset.",
+                    detail="Upload a video to this project before analyzing.",
                 )
             asset_id = asset.id
 
