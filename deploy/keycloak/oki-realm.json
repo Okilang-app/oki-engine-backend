@@ -204,5 +204,41 @@
       "priority": 30,
       "config": {}
     }
+  ],
+  "users": [
+    {
+      "id": "c0cc3d9f-e27d-4b4c-914b-f88c7e53464b",
+      "username": "engineer@oki.test",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Engineer",
+      "lastName": "Test",
+      "email": "engineer@oki.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "OkiTest123!@"
+        }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["default-roles-oki"]
+    },
+    {
+      "id": "admin-user-001",
+      "username": "admin@oki.test",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "Test",
+      "email": "admin@oki.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "OkiTest123!@"
+        }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["default-roles-oki"]
+    }
   ]
 }
