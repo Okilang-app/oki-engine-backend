@@ -38,6 +38,23 @@ async def create_ad(
     return AdResponse.model_validate(ad)
 
 
+@router.get("/ads/{ad_id}/playback-url")
+async def get_ad_playback_url(
+    ad_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Return a presigned URL to preview the replacement ad video."""
+    ad = await _service(request).get_ad(principal, ad_id)
+    if not ad.storage_key:
+        raise RuntimeError("Ad has no storage key")
+    store = getattr(request.app.state, "s3_store", None)
+    if store is None:
+        raise RuntimeError("S3 store not available")
+    url = await store.presign_get(key=ad.storage_key, expires_in=3600)
+    return {"playback_url": url, "ad_id": str(ad_id)}
+
+
 @router.delete("/ads/{ad_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ad(
     request: Request,

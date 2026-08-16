@@ -49,6 +49,16 @@ class AdService:
             await uow.session.refresh(ad)
             return ad
 
+    async def get_ad(self, principal: Principal, ad_id: UUID) -> InternalAd:
+        org_id = self._resolve_org(principal)
+        self._authorizer.require(principal, Action.PROJECT_READ, self._scope(org_id))
+
+        async with self._uow_factory() as uow:
+            ad = await uow.session.get(InternalAd, ad_id)
+            if ad is None or ad.organization_id != org_id:
+                self._not_found("ad_not_found", "Ad not found")
+            return ad
+
     async def delete_ad(self, principal: Principal, ad_id: UUID) -> None:
         org_id = self._resolve_org(principal)
         self._authorizer.require(principal, Action.ASSET_DELETE, self._scope(org_id))
