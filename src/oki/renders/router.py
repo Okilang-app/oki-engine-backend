@@ -103,6 +103,7 @@ async def get_render_playback_url(
 ) -> dict:
     """Return a presigned URL to download the rendered output video."""
     from oki.config import Settings
+    from botocore.config import Config as BotoConfig
     settings = Settings()
     import boto3
     s3 = boto3.client(
@@ -110,6 +111,7 @@ async def get_render_playback_url(
         endpoint_url=str(settings.s3_endpoint_url) if settings.s3_endpoint_url else None,
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
+        config=BotoConfig(signature_version="s3v4"),
     )
     job = await _service(request).get_render_job(principal, render_id)
     if not job.output_storage_key:
