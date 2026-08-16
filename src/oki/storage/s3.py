@@ -20,6 +20,7 @@ class S3ObjectStore:
 
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.s3_bucket
+        self._public_url = settings.s3_public_url
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -41,6 +42,12 @@ class S3ObjectStore:
             lambda: getattr(self._client, method)(*args, **kwargs),
         )
 
+    def _rewrite_url(self, url: str) -> str:
+        """Replace internal S3 endpoint with public URL for browser access."""
+        if not self._public_url:
+            return url
+        return url.replace(self._client.meta.endpoint_url, self._public_url, 1)
+
     async def presign_upload(
         self,
         key: str,
@@ -48,11 +55,12 @@ class S3ObjectStore:
         *,
         expires_in: int = 3600,
     ) -> str:
-        return self._client.generate_presigned_url(
+        url = self._client.generate_presigned_url(
             "put_object",
             Params={"Bucket": self._bucket, "Key": key, "ContentType": content_type},
             ExpiresIn=expires_in,
         )
+        return self._rewrite_url(url)
 
     async def presign_put(
         self,
@@ -71,11 +79,12 @@ class S3ObjectStore:
         expires_in: int = 3600,
     ) -> str:
         """Generate a presigned URL for GET (video playback)."""
-        return self._client.generate_presigned_url(
+        url = self._client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=expires_in,
         )
+        return self._rewrite_url(url)
 
     async def initiate_multipart_upload(
         self,
@@ -98,7 +107,7 @@ class S3ObjectStore:
         *,
         expires_in: int = 3600,
     ) -> str:
-        return self._client.generate_presigned_url(
+        url = self._client.generate_presigned_url(
             "upload_part",
             Params={
                 "Bucket": self._bucket,
@@ -108,6 +117,7 @@ class S3ObjectStore:
             },
             ExpiresIn=expires_in,
         )
+        return self._rewrite_url(url)
 
     async def complete_multipart(
         self,

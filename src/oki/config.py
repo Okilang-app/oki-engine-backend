@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://oki@localhost:5432/oki"
     valkey_url: str = "valkey://127.0.0.1:6379/0"
     s3_endpoint_url: str = "http://127.0.0.1:8333"
+    s3_public_url: str | None = None
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_bucket: str = "oki-local"

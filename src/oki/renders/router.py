@@ -119,6 +119,8 @@ async def get_render_playback_url(
         Params={"Bucket": settings.s3_bucket, "Key": job.output_storage_key},
         ExpiresIn=3600,
     )
+    if settings.s3_public_url and s3.meta.endpoint_url:
+        url = url.replace(s3.meta.endpoint_url, settings.s3_public_url, 1)
     return {"playback_url": url, "render_id": str(render_id)}
 
 
