@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from oki.api.errors import ProblemException, generate_correlation_id, parse_correlation_id
 from pydantic import BaseModel, Field
@@ -246,6 +246,46 @@ async def get_asset(
     return _response(await _service(request).get_details(principal, asset_id))
 
 
+def _parse_range(
+    range_header: str | None,
+    total_size: int,
+) -> tuple[int, int] | str | None:
+    """Parse a single-range HTTP Range header against a known object size.
+
+    Returns the inclusive ``(start, end)`` pair, the string ``"unsatisfiable"``
+    when the range falls outside the object (RFC 9110 wants a 416 there), or
+    ``None`` when the caller did not ask for a range.
+    """
+    if not range_header or not total_size:
+        return None
+    unit, _, spec = range_header.partition("=")
+    if unit.strip().lower() != "bytes" or "," in spec:
+        return None
+    start_str, sep, end_str = spec.strip().partition("-")
+    if not sep:
+        return None
+    try:
+        if not start_str:
+            # Suffix form ("bytes=-500") means the trailing N bytes.
+            suffix = int(end_str)
+            if suffix <= 0:
+                return "unsatisfiable"
+            start = max(0, total_size - suffix)
+            end = total_size - 1
+        else:
+            start = int(start_str)
+            end = int(end_str) if end_str else total_size - 1
+    except ValueError:
+        return None
+    if start >= total_size or start < 0:
+        return "unsatisfiable"
+    # Clamp rather than reject: browsers routinely ask past the end.
+    end = min(end, total_size - 1)
+    if end < start:
+        return "unsatisfiable"
+    return start, end
+
+
 @router.get("/assets/{asset_id}/stream")
 async def stream_asset(
     asset_id: UUID,
@@ -300,32 +340,29 @@ async def stream_asset(
     content_type = head.get("content_type") or "video/mp4"
     total_size = head.get("content_length") or 0
 
-    range_header = request.headers.get("range")
-    if range_header and total_size:
-        try:
-            _, byte_range = range_header.split("=")
-            start_str, end_str = byte_range.split("-")
-            start = int(start_str) if start_str else 0
-            end = int(end_str) if end_str else total_size - 1
-            chunk = await store.get_object(asset.storage_key, range_bytes=(start, end))
-            return StreamingResponse(
-                iter([chunk]),
-                status_code=206,
-                media_type=content_type,
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{total_size}",
-                    "Content-Length": str(len(chunk)),
-                    "Accept-Ranges": "bytes",
-                },
-            )
-        except Exception:
-            pass
+    byte_range = _parse_range(request.headers.get("range"), total_size)
+    if byte_range == "unsatisfiable":
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{total_size}", "Accept-Ranges": "bytes"},
+        )
+    if byte_range is not None:
+        start, end = byte_range
+        return StreamingResponse(
+            store.iter_object(asset.storage_key, range_bytes=(start, end)),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{total_size}",
+                "Content-Length": str(end - start + 1),
+                "Accept-Ranges": "bytes",
+            },
+        )
 
-    data = await store.get_object(asset.storage_key)
     return StreamingResponse(
-        iter([data]),
+        store.iter_object(asset.storage_key),
         media_type=content_type,
-        headers={"Accept-Ranges": "bytes", "Content-Length": str(len(data))},
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(total_size)},
     )
 
 

@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class AdCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., max_length=255)
-    storage_key: str = Field(..., max_length=1024)
+    name: str = Field(..., min_length=1, max_length=255)
+    # An ad with a blank key registers fine but blows up at render time, when
+    # the renderer tries to fetch it from S3. Reject it at the door instead.
+    storage_key: str = Field(..., min_length=1, max_length=1024)
     duration_seconds: int | None = Field(default=None, ge=0)
 
 

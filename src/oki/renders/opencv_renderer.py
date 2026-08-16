@@ -45,7 +45,19 @@ class OpenCVRenderService:
         )
 
     async def execute_render(self, render_job_id: UUID) -> None:
-        """Download source, cut/replace ad segments via FFmpeg, upload result."""
+        """Download source, cut/replace ad segments via FFmpeg, upload result.
+
+        Runs from a FastAPI BackgroundTask, which discards exceptions — an
+        unhandled error would otherwise leave the job stuck on PROCESSING with
+        no message and no trace of what went wrong.
+        """
+        try:
+            await self._execute_render(render_job_id)
+        except Exception as exc:
+            logger.exception("[Renderer] Render %s failed", render_job_id)
+            await self._fail(render_job_id, f"{type(exc).__name__}: {exc}")
+
+    async def _execute_render(self, render_job_id: UUID) -> None:
         async with self._uow_factory() as uow:
             render_job = await uow.session.get(RenderJob, render_job_id)
             if render_job is None:
@@ -66,19 +78,27 @@ class OpenCVRenderService:
                 )
             )
             if source_asset is None:
-                source_asset = await uow.session.scalar(
-                    select(SourceAsset)
-                    .where(
-                        SourceAsset.organization_id == job.organization_id,
-                        SourceAsset.status == "active",
-                    )
-                    .order_by(SourceAsset.created_at.desc())
+                # SourceAsset.localization_job_id only points at one job, so a
+                # second job over the same asset re-points it and deleting that
+                # job clears it. The segments record the asset the analysis
+                # actually ran on, which is what we must render.
+                analysed_asset_id = await uow.session.scalar(
+                    select(AdSegments.asset_id)
+                    .where(AdSegments.job_id == job.id)
                     .limit(1)
                 )
+                if analysed_asset_id is not None:
+                    source_asset = await uow.session.scalar(
+                        select(SourceAsset).where(SourceAsset.id == analysed_asset_id)
+                    )
 
             if source_asset is None:
+                # Never fall back to "some other asset in the org" — that renders
+                # an unrelated video and reports success.
                 render_job.status = RenderStatus.FAILED
-                render_job.error_message = "No source asset found"
+                render_job.error_message = (
+                    "No source asset linked to this job; cannot determine what to render."
+                )
                 await uow.session.flush()
                 return
 
@@ -264,9 +284,20 @@ class OpenCVRenderService:
             "-y", str(output_path),
         )
 
-        # If concat with copy fails (codec mismatch), re-encode
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            logger.info("[Renderer] Copy-concat failed, re-encoding...")
+        # A stream-copy concat can "succeed" and still emit a truncated file when
+        # the parts disagree, so check the runtime rather than just the size —
+        # otherwise a 15-minute render silently ships as a few seconds.
+        expected = 0.0
+        for part in parts:
+            expected += await self._probe_duration(str(part))
+        actual = await self._probe_duration(str(output_path))
+        too_short = expected > 0 and actual < expected * 0.98
+
+        if not output_path.exists() or output_path.stat().st_size == 0 or too_short:
+            logger.warning(
+                "[Renderer] Copy-concat unusable (expected %.1fs, got %.1fs); re-encoding...",
+                expected, actual,
+            )
             await self._run_ffmpeg(
                 ffmpeg,
                 "-f", "concat", "-safe", "0",
@@ -275,6 +306,34 @@ class OpenCVRenderService:
                 "-c:a", "aac", "-b:a", "128k",
                 "-y", str(output_path),
             )
+            actual = await self._probe_duration(str(output_path))
+            if expected > 0 and actual < expected * 0.98:
+                raise RuntimeError(
+                    f"Render produced {actual:.1f}s of video but the parts total "
+                    f"{expected:.1f}s; refusing to publish a truncated output."
+                )
+
+    async def _probe_duration(self, path: str) -> float:
+        """Return a file's duration in seconds, or 0.0 when it cannot be read.
+
+        Unlike :meth:`_get_duration` this never substitutes a placeholder value —
+        callers use it to validate output, where a fabricated number would hide
+        the very failure being checked for.
+        """
+        ffprobe = self._settings.ffprobe_path
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", path],
+                    capture_output=True, text=True, timeout=30,
+                ),
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return 0.0
 
     async def _extract_segment(
         self, ffmpeg: str, source: Path, output: Path, start: float, end: float
@@ -296,22 +355,60 @@ class OpenCVRenderService:
     async def _normalize_for_concat(
         self, ffmpeg: str, input_path: Path, output_path: Path, reference_path: Path
     ) -> None:
-        """Re-encode ad clip to match the source video's parameters for clean concatenation."""
+        """Re-encode ad clip to match the source video's parameters for clean concatenation.
+
+        Every part fed to the concat demuxer must carry the same stream layout.
+        A silent ad would otherwise yield a video-only part, and concat with
+        ``-c copy`` does not reject that — it emits a truncated, audio-less file
+        while still reporting success. Synthesise silence so the layout matches.
+        """
         # Get source video properties
         probe_info = await self._get_video_info(ffmpeg, str(reference_path))
         width = probe_info.get("width", 1920)
         height = probe_info.get("height", 1080)
         fps = probe_info.get("fps", 30)
 
-        await self._run_ffmpeg(
-            ffmpeg,
-            "-i", str(input_path),
+        has_audio = await self._has_audio_stream(str(input_path))
+        if not has_audio:
+            logger.info("[Renderer] Ad %s has no audio; adding a silent track", input_path.name)
+
+        args: list[str] = ["-i", str(input_path)]
+        if not has_audio:
+            args += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+        args += [
             "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
             "-r", str(fps),
+            "-map", "0:v:0",
+            "-map", "1:a:0" if not has_audio else "0:a:0",
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-            "-y", str(output_path),
-        )
+        ]
+        if not has_audio:
+            # anullsrc is infinite; stop when the video track ends.
+            args += ["-shortest"]
+        args += ["-y", str(output_path)]
+
+        await self._run_ffmpeg(ffmpeg, *args)
+
+    async def _has_audio_stream(self, path: str) -> bool:
+        """Return True when the file carries at least one audio stream."""
+        ffprobe = self._settings.ffprobe_path
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [ffprobe, "-v", "error", "-select_streams", "a",
+                     "-show_entries", "stream=index", "-of", "csv=p=0", path],
+                    capture_output=True, text=True, timeout=15,
+                ),
+            )
+            return bool(result.stdout.strip())
+        except Exception as exc:
+            # Assume audio is present: re-muxing a track that exists is safe,
+            # whereas wrongly adding a second one would break the mapping.
+            logger.warning("[Renderer] Could not probe audio streams of %s: %s", path, exc)
+            return True
 
     async def _get_video_info(self, ffmpeg: str, path: str) -> dict:
         """Get video width, height, fps via ffprobe."""

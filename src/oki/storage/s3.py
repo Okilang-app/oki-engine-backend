@@ -1,6 +1,7 @@
 """S3-compatible object store implementation using boto3."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 
 import boto3
@@ -8,6 +9,10 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from oki.config import Settings
+
+# Chunk size for streaming reads. Large enough to keep syscall overhead low,
+# small enough that a media file never lands in memory all at once.
+STREAM_CHUNK_SIZE = 1024 * 1024
 
 
 class S3ObjectStore:
@@ -23,6 +28,9 @@ class S3ObjectStore:
             config=BotoConfig(
                 signature_version="s3v4",
                 retries={"max_attempts": 3, "mode": "adaptive"},
+                # Streaming responses hold a connection for the whole download,
+                # so the default pool of 10 is exhausted by a handful of viewers.
+                max_pool_connections=50,
             ),
         )
 
@@ -140,6 +148,35 @@ class S3ObjectStore:
         return await asyncio.get_running_loop().run_in_executor(
             None, lambda: response["Body"].read()
         )
+
+    async def iter_object(
+        self,
+        key: str,
+        *,
+        range_bytes: tuple[int, int] | None = None,
+        chunk_size: int = STREAM_CHUNK_SIZE,
+    ) -> AsyncIterator[bytes]:
+        """Yield an object's bytes in chunks.
+
+        Unlike :meth:`get_object` this never materialises the whole body, so a
+        multi-gigabyte media file costs one chunk of memory per active reader
+        instead of its full size. The underlying HTTP connection is released
+        even if the client disconnects mid-stream.
+        """
+        params: dict[str, Any] = {"Bucket": self._bucket, "Key": key}
+        if range_bytes is not None:
+            params["Range"] = f"bytes={range_bytes[0]}-{range_bytes[1]}"
+        response = await self._run("get_object", **params)
+        body = response["Body"]
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, body.read, chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await loop.run_in_executor(None, body.close)
 
     async def head_object(
         self,

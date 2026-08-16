@@ -83,17 +83,25 @@ class YtDlpImporter:
             file_size = video_path.stat().st_size
             logger.info("Downloaded %d bytes: %s", file_size, video_path.name)
 
-            sha256 = hashlib.sha256(video_path.read_bytes()).hexdigest()
+            # Hash incrementally: a 4K import is hundreds of MB and read_bytes()
+            # would hold the entire file in memory just to digest it.
+            digest = hashlib.sha256()
+            with video_path.open("rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(block)
+            sha256 = digest.hexdigest()
 
             storage_key = f"uploads/{organization_id}/{asset_id}/source.mp4"
             logger.info("Uploading to s3://%s/%s", self._settings.s3_bucket, storage_key)
 
-            self._s3.put_object(
-                Bucket=self._settings.s3_bucket,
-                Key=storage_key,
-                Body=video_path.read_bytes(),
-                ContentType="video/mp4",
-            )
+            # upload_fileobj streams in parts instead of buffering the whole body.
+            with video_path.open("rb") as fh:
+                self._s3.upload_fileobj(
+                    fh,
+                    self._settings.s3_bucket,
+                    storage_key,
+                    ExtraArgs={"ContentType": "video/mp4"},
+                )
 
             duration = metadata.get("duration")
             title = metadata.get("title", "Imported video")
