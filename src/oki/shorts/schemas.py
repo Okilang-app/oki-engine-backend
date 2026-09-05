@@ -38,3 +38,37 @@ class ShortVersionResponse(BaseModel):
     refinement_prompt: str | None
     revised_media_url: str | None
     created_at: datetime
+
+
+class ShortScoreResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    version_id: UUID | None
+    factor_scores: dict[str, float]
+    total_score: float
+    scored_at: datetime
+
+
+class ShortCandidateDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    organization_id: UUID
+    job_id: UUID
+    status: ShortStatus
+    source_timestamps: list[tuple[float, float]]
+    detected_hooks: dict
+    raw_score: float | None
+    created_by_user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    versions: list[ShortVersionResponse]
+    scores: list[ShortScoreResponse]
+
+
+class ReviseShortRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_notes: str | None = None

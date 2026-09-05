@@ -37,3 +37,25 @@ class VoiceProfileResponse(BaseModel):
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class VoiceProfileCreate(BaseModel):
+    name: str
+    mode: VoiceMode
+    language_code: str
+    provider_key: str = "elevenlabs"
+    provider_voice_id: str | None = None
+    creator_id: UUID | None = None
+    consent_reference: str | None = None
+
+
+class VoiceProfileUpdate(BaseModel):
+    name: str | None = None
+    provider_voice_id: str | None = None
+    language_code: str | None = None
+    consent_reference: str | None = None
+
+
+class ElevenLabsVoiceResponse(BaseModel):
+    voice_id: str
+    name: str

@@ -20,6 +20,8 @@ from oki.analysis.enums import AnalysisStatus, SegmentType
 from oki.sponsors.models import AdSegments, AdSegmentEvidence
 from oki.sponsors.enums import SponsorStatus
 from oki.identity.models import User
+from oki.voices.models import VoiceProfile
+from oki.voices.enums import VoiceMode
 
 ORG_ID = UUID(int=0)  # Matches LocalMembershipResolver fallback
 USER_ID = UUID(int=0)  # Matches LocalMembershipResolver fallback principal
@@ -137,6 +139,11 @@ async def seed():
             )
             session.add(job)
             await session.flush()
+            # Link asset to job so sponsor markup works
+            if asset:
+                asset.localization_job_id = job.id
+                asset.project_id = project.id
+                await session.flush()
             print(f"  Job ID: {job.id}")
             print(f"  Project ID: {project.id}")
         else:
@@ -201,6 +208,45 @@ async def seed():
             print(f"  Detected {detected} sponsor segments")
         else:
             print("Transcript segments already exist.")
+
+        # 7. Create voice profiles (only if not already exist)
+        existing_voices = await session.scalar(
+            select(VoiceProfile).where(VoiceProfile.organization_id == ORG_ID).limit(1)
+        )
+        if existing_voices is None:
+            print("Creating demo voice profiles...")
+            voice_profiles = [
+                VoiceProfile(
+                    organization_id=ORG_ID,
+                    name="Rachel",
+                    mode=VoiceMode.LICENSED_NEUTRAL_VOICE,
+                    language_code="en",
+                    provider_key="elevenlabs",
+                    provider_voice_id="21m00Tcm4TlvDq8ikWAM",
+                ),
+                VoiceProfile(
+                    organization_id=ORG_ID,
+                    name="Antoni",
+                    mode=VoiceMode.LICENSED_NEUTRAL_VOICE,
+                    language_code="es",
+                    provider_key="elevenlabs",
+                    provider_voice_id="ErXwobaYiN019PkySvjV",
+                ),
+                VoiceProfile(
+                    organization_id=ORG_ID,
+                    name="Bella",
+                    mode=VoiceMode.LICENSED_NEUTRAL_VOICE,
+                    language_code="en",
+                    provider_key="elevenlabs",
+                    provider_voice_id="EXAVITQu4vr4xnSDxMaL",
+                ),
+            ]
+            for vp in voice_profiles:
+                session.add(vp)
+            await session.flush()
+            print(f"  Created {len(voice_profiles)} voice profiles")
+        else:
+            print("Voice profiles already exist.")
 
         await session.commit()
         print("\nDemo scenario seeded successfully!")

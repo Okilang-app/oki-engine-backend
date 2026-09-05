@@ -6,9 +6,12 @@ from oki.api.errors import ProblemException
 from oki.identity.dependencies import current_principal
 from oki.identity.schemas import Principal
 from oki.sponsors.schemas import (
+    SponsorCandidateResponse,
     SponsorDecisionResponse,
     SponsorListResponse,
     SponsorReviewRequest,
+    ManualSponsorCreateRequest,
+    ManualSponsorUpdateRequest,
 )
 from oki.sponsors.service import SponsorDetectionService, SponsorReviewService
 
@@ -139,3 +142,64 @@ async def replace_sponsor(
         reviewed_at=segment.reviewed_at,
         created_at=segment.created_at,
     )
+
+
+@router.post("/jobs/{job_id}/sponsors/manual", response_model=SponsorCandidateResponse, status_code=status.HTTP_201_CREATED)
+async def create_manual_sponsor(
+    job_id: UUID,
+    request: Request,
+    payload: ManualSponsorCreateRequest,
+    principal: Principal = Depends(current_principal),
+) -> SponsorCandidateResponse:
+    segment = await _review_service(request).create_manual(principal, job_id, payload)
+    return SponsorCandidateResponse(
+        id=segment.id,
+        job_id=segment.job_id,
+        asset_id=segment.asset_id,
+        start_time=float(segment.start_time),
+        end_time=float(segment.end_time),
+        sponsor_name=segment.sponsor_name,
+        status=segment.status.value,
+        detection_reason="manual",
+        confidence=None,
+        replacement_type=segment.replacement_type,
+        proposed_replacement_ad_id=None,
+        proposed_replacement_ad_name=None,
+        created_at=segment.created_at,
+        updated_at=segment.updated_at,
+    )
+
+
+@router.put("/sponsors/{segment_id}", response_model=SponsorCandidateResponse)
+async def update_manual_sponsor(
+    segment_id: UUID,
+    request: Request,
+    payload: ManualSponsorUpdateRequest,
+    principal: Principal = Depends(current_principal),
+) -> SponsorCandidateResponse:
+    segment = await _review_service(request).update_manual(principal, segment_id, payload)
+    return SponsorCandidateResponse(
+        id=segment.id,
+        job_id=segment.job_id,
+        asset_id=segment.asset_id,
+        start_time=float(segment.start_time),
+        end_time=float(segment.end_time),
+        sponsor_name=segment.sponsor_name,
+        status=segment.status.value,
+        detection_reason="manual",
+        confidence=None,
+        replacement_type=segment.replacement_type,
+        proposed_replacement_ad_id=None,
+        proposed_replacement_ad_name=None,
+        created_at=segment.created_at,
+        updated_at=segment.updated_at,
+    )
+
+
+@router.delete("/sponsors/{segment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_manual_sponsor(
+    segment_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> None:
+    await _review_service(request).delete_manual(principal, segment_id)

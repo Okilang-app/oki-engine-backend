@@ -82,22 +82,73 @@ class LocalMembershipResolver:
         if not rows:
             # MVP fallback: auto-provision a default admin principal for any
             # authenticated Keycloak user when no local membership exists.
-            # In production this should be removed or gated behind an onboarding flow.
-            return Principal(
-                subject=subject,
-                user_id=UUID(int=0),
-                email="",
-                display_name="Dev User",
-                memberships=(
-                    PrincipalMembership(
-                        organization_id=UUID(int=0),
-                        role_names=frozenset({"admin"}),
-                        actions=frozenset(Action),
-                        creator_organization_ids=frozenset(),
-                        project_ids=frozenset(),
+            # Creates a default organization and user so that FK constraints
+            # in downstream services are not violated.
+            async with self._session_factory() as session:
+                from sqlalchemy import select as _select
+                from oki.identity.models import Organization, User
+
+                # Create or reuse default dev organization
+                dev_org = await session.scalar(
+                    _select(Organization).where(Organization.name == "Dev Organization")
+                )
+                if dev_org is None:
+                    dev_org = Organization(
+                        name="Dev Organization",
+                        slug="dev-organization",
+                        is_active=True,
+                    )
+                    session.add(dev_org)
+                    await session.flush()
+
+                # Create or reuse user
+                user = await session.scalar(
+                    _select(User).where(User.keycloak_subject == subject)
+                )
+                if user is None:
+                    user = User(
+                        keycloak_subject=subject,
+                        email=f"{subject[:30]}@dev.local",
+                        display_name="Dev User",
+                        is_active=True,
+                    )
+                    session.add(user)
+                    await session.flush()
+
+                # Ensure a default creator exists for the dev org
+                from oki.creators.models import Creator, CreatorStatus
+                creator = await session.scalar(
+                    _select(Creator).where(Creator.organization_id == dev_org.id).limit(1)
+                )
+                if creator is None:
+                    creator = Creator(
+                        organization_id=dev_org.id,
+                        legal_name="Dev Creator",
+                        display_name="Dev Creator",
+                        primary_email=user.email,
+                        status=CreatorStatus.ACTIVE,
+                        created_by_user_id=user.id,
+                    )
+                    session.add(creator)
+                    await session.flush()
+
+                await session.commit()
+
+                return Principal(
+                    subject=subject,
+                    user_id=user.id,
+                    email=user.email or "",
+                    display_name=user.display_name or "Dev User",
+                    memberships=(
+                        PrincipalMembership(
+                            organization_id=dev_org.id,
+                            role_names=frozenset({"admin"}),
+                            actions=frozenset(Action),
+                            creator_organization_ids=frozenset(),
+                            project_ids=frozenset(),
+                        ),
                     ),
-                ),
-            )
+                )
 
         first = rows[0]
         memberships: dict[UUID, dict[str, Any]] = {}

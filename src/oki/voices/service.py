@@ -10,6 +10,7 @@ from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, ResourceScope
 from oki.voices.models import VoiceProfile
+from oki.voices.schemas import VoiceProfileCreate, VoiceProfileUpdate
 
 
 class VoiceService:
@@ -52,6 +53,64 @@ class VoiceService:
                 Action.CREATOR_READ,
                 ResourceScope(organization_id=profile.organization_id),
             )
+            return profile
+
+    async def create_profile(
+        self,
+        principal: Principal,
+        payload: VoiceProfileCreate,
+    ) -> VoiceProfile:
+        org_id = principal.memberships[0].organization_id if principal.memberships else UUID(int=0)
+        self._authorizer.require(
+            principal,
+            Action.CREATOR_CREATE,
+            self._scope(org_id),
+        )
+
+        async with self._uow_factory() as uow:
+            profile = VoiceProfile(
+                organization_id=org_id,
+                creator_id=payload.creator_id,
+                name=payload.name,
+                mode=payload.mode,
+                language_code=payload.language_code,
+                provider_key=payload.provider_key,
+                provider_voice_id=payload.provider_voice_id,
+                consent_reference=payload.consent_reference,
+            )
+            uow.session.add(profile)
+            await uow.session.flush()
+            await uow.session.refresh(profile)
+            return profile
+
+    async def update_profile(
+        self,
+        principal: Principal,
+        profile_id: UUID,
+        payload: VoiceProfileUpdate,
+    ) -> VoiceProfile:
+        async with self._uow_factory() as uow:
+            profile = await uow.session.get(VoiceProfile, profile_id)
+            if profile is None:
+                self._not_found("voice_profile_not_found", "Voice profile not found")
+
+            self._authorizer.require(
+                principal,
+                Action.CREATOR_CREATE,
+                ResourceScope(organization_id=profile.organization_id),
+            )
+
+            if payload.name is not None:
+                profile.name = payload.name
+            if payload.provider_voice_id is not None:
+                profile.provider_voice_id = payload.provider_voice_id
+            if payload.language_code is not None:
+                profile.language_code = payload.language_code
+            if payload.consent_reference is not None:
+                profile.consent_reference = payload.consent_reference
+
+            await uow.session.flush()
+            await uow.session.refresh(profile)
             return profile
 
     @staticmethod

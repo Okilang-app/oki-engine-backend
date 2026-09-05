@@ -75,6 +75,39 @@ class ProblemMiddleware:
             if correlation_id is None:
                 correlation_id = generate_correlation_id()
                 request.state.correlation_id = correlation_id
+
+            from oki.api.errors import ProblemException
+            if isinstance(exception, ProblemException):
+                # Forward ProblemException raised by inner middleware so the
+                # correct status code and body are returned (CORS already
+                # wraps us, so headers will be present).
+                from starlette.responses import JSONResponse as _JSONResponse
+                correlation_id = parse_correlation_id(
+                    str(getattr(request.state, "correlation_id", "")),
+                ) or generate_correlation_id()
+                problem_body = {
+                    "type": exception.type_uri,
+                    "title": exception.title,
+                    "status": exception.status_code,
+                    "detail": exception.detail,
+                    "instance": request.url.path,
+                    "code": exception.code,
+                    "correlation_id": correlation_id,
+                    "retryable": exception.retryable,
+                }
+                if exception.field_errors:
+                    problem_body["field_errors"] = exception.field_errors
+                response_headers = dict(exception.headers or {})
+                response_headers["x-correlation-id"] = correlation_id
+                response = _JSONResponse(
+                    status_code=exception.status_code,
+                    content=problem_body,
+                    headers=response_headers,
+                    media_type="application/problem+json",
+                )
+                await response(scope, receive, send)
+                return
+
             import traceback
             print(f"\n[500 ERROR] {scope['method']} {scope['path']}: {type(exception).__name__}: {exception}")
             traceback.print_exc()

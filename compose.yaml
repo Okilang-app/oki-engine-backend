@@ -31,7 +31,7 @@ x-oki-env: &oki-env
 
 services:
   postgres:
-    image: postgres:18
+    image: postgres:17
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-oki}
       POSTGRES_USER: ${POSTGRES_USER:-oki}
@@ -67,6 +67,7 @@ services:
 
   seaweedfs:
     image: chrislusf/seaweedfs:4.41
+    platform: linux/amd64
     command: ["mini", "-dir=/data"]
     environment:
       AWS_ACCESS_KEY_ID: ${OKI_S3_ACCESS_KEY:-oki}
@@ -109,6 +110,7 @@ services:
 
   clamav:
     image: clamav/clamav:1.4.3
+    platform: linux/amd64
     ports:
       - "127.0.0.1:${CLAMAV_PORT:-3310}:3310"
     healthcheck:

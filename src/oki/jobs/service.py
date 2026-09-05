@@ -265,6 +265,111 @@ class JobService:
                 created_segments.append(segment)
             await uow.session.flush()
 
+            # ── Speaker diarization ──────────────────────────────────────────
+            speakers_by_label: dict[str, UUID] = {}
+            try:
+                from oki.analysis.models import Speakers
+                speaker_counter_d = 1
+                current_speaker_label = "SPEAKER_1"
+                prev_end_d = 0.0
+                for seg in created_segments:
+                    gap = float(seg.start_time) - prev_end_d
+                    if gap > 0.8 and prev_end_d > 0.0:
+                        speaker_counter_d = (speaker_counter_d % 2) + 1
+                        current_speaker_label = f"SPEAKER_{speaker_counter_d}"
+                    if current_speaker_label not in speakers_by_label:
+                        sp = Speakers(
+                            organization_id=org_id,
+                            asset_id=asset_id,
+                            job_id=job_id,
+                            speaker_label=current_speaker_label,
+                            confidence=Decimal("0.75"),
+                            sample_count=1,
+                            created_by_user_id=principal.user_id,
+                        )
+                        uow.session.add(sp)
+                        await uow.session.flush()
+                        speakers_by_label[current_speaker_label] = sp.id
+                    seg.speaker_id = speakers_by_label[current_speaker_label]
+                    prev_end_d = float(seg.end_time)
+                await uow.session.flush()
+            except Exception as exc:
+                print(f"[analyze_job] Diarization failed: {exc}")
+
+            # ── Named entity extraction ──────────────────────────────────────
+            try:
+                from oki.analysis.models import NamedEntities
+                from oki.providers.factory import create_openai_client
+                if use_real and created_segments:
+                    full_text = " ".join(seg.text for seg in created_segments[:30])
+                    client_gpt = create_openai_client(settings)
+                    model_name = settings.azure_gpt_deployment if settings.azure_openai_endpoint else "gpt-4o-mini"
+                    if client_gpt and full_text.strip():
+                        ner_resp = await client_gpt.chat.completions.create(
+                            model=model_name,
+                            messages=[{"role": "user", "content": (
+                                "Extract named entities from this transcript. "
+                                "Return JSON with key 'entities' as array of objects: "
+                                "{entity_type: PERSON|ORG|PRODUCT|BRAND|PLACE|NUMBER|URL, entity_text, confidence}. "
+                                "Max 50 entities.\n\nTranscript:\n" + full_text[:3000]
+                            )}],
+                            temperature=0,
+                            max_tokens=1500,
+                            response_format={"type": "json_object"},
+                        )
+                        import json as _json
+                        ner_content = ner_resp.choices[0].message.content or "{}"
+                        ner_parsed = _json.loads(ner_content)
+                        entities_list = ner_parsed if isinstance(ner_parsed, list) else ner_parsed.get("entities", [])
+                        for ent in entities_list[:50]:
+                            uow.session.add(NamedEntities(
+                                organization_id=org_id,
+                                asset_id=asset_id,
+                                job_id=job_id,
+                                entity_type=str(ent.get("entity_type", "MISC"))[:100],
+                                entity_text=str(ent.get("entity_text", ""))[:500],
+                                confidence=Decimal(str(min(1.0, max(0.0, float(ent.get("confidence", 0.8)))))),
+                            ))
+                        await uow.session.flush()
+            except Exception as exc:
+                print(f"[analyze_job] NER extraction failed: {exc}")
+
+            # ── Audio region mapping ─────────────────────────────────────────
+            try:
+                from oki.analysis.models import AudioRegions
+                if asset.storage_key:
+                    duration_val = float(asset.duration_seconds) if asset.duration_seconds else 60.0
+                    uow.session.add(AudioRegions(
+                        organization_id=org_id, asset_id=asset_id, job_id=job_id,
+                        start_time=Decimal("0.0"),
+                        end_time=Decimal(str(min(5.0, duration_val))),
+                        region_type="intro", confidence=Decimal("0.6"),
+                        features={"source": "heuristic"},
+                    ))
+                    if duration_val > 10.0:
+                        uow.session.add(AudioRegions(
+                            organization_id=org_id, asset_id=asset_id, job_id=job_id,
+                            start_time=Decimal(str(max(0.0, duration_val - 5.0))),
+                            end_time=Decimal(str(duration_val)),
+                            region_type="outro", confidence=Decimal("0.6"),
+                            features={"source": "heuristic"},
+                        ))
+                    prev_end_r = 0.0
+                    for seg in created_segments:
+                        seg_start = float(seg.start_time)
+                        if seg_start - prev_end_r > 2.0:
+                            uow.session.add(AudioRegions(
+                                organization_id=org_id, asset_id=asset_id, job_id=job_id,
+                                start_time=Decimal(str(prev_end_r)),
+                                end_time=Decimal(str(seg_start)),
+                                region_type="silence", confidence=Decimal("0.85"),
+                                features={"gap_seconds": seg_start - prev_end_r, "source": "transcript_gap"},
+                            ))
+                        prev_end_r = float(seg.end_time)
+                    await uow.session.flush()
+            except Exception as exc:
+                print(f"[analyze_job] Audio region mapping failed: {exc}")
+
             # ── Sponsor detection via SponsorBlock-ML ────────────────────────
             detected_count = 0
             proposed_count = 0
@@ -385,6 +490,7 @@ class JobService:
                 "segments_created": len(created_segments),
                 "sponsors_detected": detected_count,
                 "proposed_replacements": proposed_count,
+                "speakers_detected": len(speakers_by_label),
                 "source": "real_whisper" if use_real and transcript_data is not DEMO_TRANSCRIPT else "demo_fallback",
                 "detection_method": "sponsorblock_ml" if detected_count > 0 else "none",
             }

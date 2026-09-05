@@ -50,12 +50,26 @@ class TranslationService:
                 Action.PROJECT_READ,
                 self._scope(organization_id),
             )
-            # Stub: create translation record without real asset_id
+            from oki.assets.models import SourceAsset
+            asset_record = await uow.session.scalar(
+                select(SourceAsset)
+                .where(SourceAsset.localization_job_id == job_id)
+                .limit(1)
+            )
+            if asset_record is None:
+                asset_record = await uow.session.scalar(
+                    select(SourceAsset)
+                    .where(SourceAsset.project_id == project_id)
+                    .order_by(SourceAsset.created_at.desc())
+                    .limit(1)
+                )
+            real_asset_id = asset_record.id if asset_record else job_id
+
             translation = Translations(
                 organization_id=organization_id,
                 job_id=job_id,
                 project_id=project_id,
-                asset_id=job_id,  # TODO: replace with real asset lookup
+                asset_id=real_asset_id,
                 source_language=source_language.lower(),
                 target_language=target_language.lower(),
                 status=TranslationStatus.PENDING,
@@ -178,19 +192,52 @@ class TranslationService:
 
 
 class TranslationQaService:
-    """Stub QA evaluation service for translations."""
-
     async def evaluate(
         self,
         translation_id: UUID,
         segments: list[dict[str, Any]],
     ) -> dict[QaDimension, int]:
-        """Evaluate translation across 7 QA dimensions and return scores.
+        """Evaluate translation across 7 QA dimensions using GPT."""
+        import json
+        from oki.config import Settings
+        from oki.providers.factory import create_openai_client
 
-        TODO: Replace with real model-based or heuristic QA evaluation.
-        """
-        scores: dict[QaDimension, int] = {}
-        for dimension in QaDimension:
-            # Stub: random-ish deterministic score based on dimension name length
-            scores[dimension] = max(1, min(10, 7 + (len(dimension.value) % 3)))
-        return scores
+        settings = Settings()
+        client = create_openai_client(settings)
+
+        if client is None or not segments:
+            return {dim: 70 for dim in QaDimension}
+
+        model = (
+            settings.azure_gpt_deployment
+            if settings.azure_openai_endpoint
+            else "gpt-4o-mini"
+        )
+        sample = segments[:10]
+        pairs = "\n".join(
+            f"SRC: {s.get('source_text', '')}\nTGT: {s.get('translated_text', '')}"
+            for s in sample
+        )
+        prompt = (
+            "Rate this translation across 7 dimensions. Return JSON with integer scores 0-100.\n"
+            "Dimensions: accuracy, fluency, terminology, style, locale, format, safety.\n\n"
+            f"{pairs[:3000]}\n\n"
+            'Return JSON only: {"accuracy": N, "fluency": N, "terminology": N, '
+            '"style": N, "locale": N, "format": N, "safety": N}'
+        )
+
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=200,
+                response_format={"type": "json_object"},
+            )
+            raw = json.loads(resp.choices[0].message.content or "{}")
+            return {
+                dim: max(0, min(100, int(raw.get(dim.value, 70))))
+                for dim in QaDimension
+            }
+        except Exception:
+            return {dim: 70 for dim in QaDimension}

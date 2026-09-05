@@ -7,6 +7,7 @@ from pathlib import Path
 from openai import AsyncAzureOpenAI
 
 from oki.config import Settings
+from oki.providers.cost_guard import check_cost
 from oki.providers.factory import create_openai_client
 
 
@@ -35,6 +36,10 @@ class OpenAITranscriptionClient:
             )
 
         model = self._deployment if isinstance(self._client, AsyncAzureOpenAI) else "whisper-1"
+
+        # Whisper pricing: ~$0.006 per minute
+        estimated = (duration_seconds / 60.0) * 0.006
+        await check_cost("openai", estimated_cost_usd=estimated)
 
         # Try verbose_json first (gives segments + timestamps)
         result = await self._call_whisper(

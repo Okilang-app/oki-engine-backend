@@ -22,12 +22,23 @@ from oki.finance.schemas import PayoutRunCreate
 from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, ResourceScope
+import csv
+import hashlib
+import io
+from oki.rights.models import RightsAgreement, RightsAgreementVersion
+from oki.storage.s3 import S3ObjectStore
 
 
 class FinanceService:
-    def __init__(self, uow_factory: Callable[[], UnitOfWork], authorizer: Authorizer) -> None:
+    def __init__(
+        self,
+        uow_factory: Callable[[], UnitOfWork],
+        authorizer: Authorizer,
+        store: S3ObjectStore | None = None,
+    ) -> None:
         self._uow_factory = uow_factory
         self._authorizer = authorizer
+        self._store = store
 
     async def create_run(
         self,
@@ -77,10 +88,30 @@ class FinanceService:
                 # Placeholder: use revenue_share_basis as gross for accumulation
                 total_gross += item.revenue_share_basis
 
-                # TODO: compute actual creator payout via agreement terms; stub uses revenue_share_basis
+                # Load creator's latest agreement and version for revenue share
+                agreement = await uow.session.scalar(
+                    select(RightsAgreement)
+                    .where(
+                        RightsAgreement.creator_id == item.creator_id,
+                        RightsAgreement.organization_id == payload.organization_id,
+                    )
+                    .order_by(RightsAgreement.created_at.desc())
+                    .limit(1)
+                )
+                share_bps = 5000  # default 50%
+                if agreement is not None:
+                    version = await uow.session.scalar(
+                        select(RightsAgreementVersion)
+                        .where(RightsAgreementVersion.agreement_id == agreement.id)
+                        .order_by(RightsAgreementVersion.agreement_version_number.desc())
+                        .limit(1)
+                    )
+                    if version is not None and version.revenue_share_bps is not None:
+                        share_bps = int(version.revenue_share_bps)
+
                 calculated = PayoutCalculator.calculate(
                     gross=item.revenue_share_basis,
-                    share_bps=10000,  # TODO: read from agreement
+                    share_bps=share_bps,
                     currency=item.currency,
                 )
                 payout = CreatorPayouts(
@@ -186,7 +217,74 @@ class FinanceService:
             uow.session.add(export_record)
             await uow.session.flush()
 
-            # TODO: generate actual export file and update file_url / file_sha256
+            payouts = list(
+                (
+                    await uow.session.scalars(
+                        select(CreatorPayouts).where(CreatorPayouts.run_id == run.id)
+                    )
+                ).all()
+            )
+
+            csv_buffer = io.StringIO()
+            writer = csv.writer(csv_buffer)
+            writer.writerow(
+                [
+                    "creator_name",
+                    "total_views",
+                    "revenue_share_bps",
+                    "payout_amount",
+                    "currency",
+                    "period_start",
+                    "period_end",
+                ]
+            )
+            for payout in payouts:
+                creator = await uow.session.get(Creator, payout.creator_id)
+                creator_name = creator.display_name if creator else ""
+
+                agreement = await uow.session.scalar(
+                    select(RightsAgreement)
+                    .where(
+                        RightsAgreement.creator_id == payout.creator_id,
+                        RightsAgreement.organization_id == run.organization_id,
+                    )
+                    .order_by(RightsAgreement.created_at.desc())
+                    .limit(1)
+                )
+                revenue_share_bps = 5000
+                if agreement is not None:
+                    version = await uow.session.scalar(
+                        select(RightsAgreementVersion)
+                        .where(RightsAgreementVersion.agreement_id == agreement.id)
+                        .order_by(RightsAgreementVersion.agreement_version_number.desc())
+                        .limit(1)
+                    )
+                    if version is not None and version.revenue_share_bps is not None:
+                        revenue_share_bps = int(version.revenue_share_bps)
+
+                writer.writerow(
+                    [
+                        creator_name,
+                        0,
+                        revenue_share_bps,
+                        str(payout.calculated_amount),
+                        payout.currency,
+                        run.period_start.isoformat(),
+                        run.period_end.isoformat(),
+                    ]
+                )
+
+            csv_bytes = csv_buffer.getvalue().encode("utf-8")
+            file_key = f"finance/exports/{export_record.id}.csv"
+
+            if self._store is not None:
+                await self._store.put_object(file_key, csv_bytes, content_type="text/csv")
+                file_url = await self._store.presign_get(file_key, expires_in=3600)
+                file_sha256 = hashlib.sha256(csv_bytes).hexdigest()
+                export_record.file_url = file_url
+                export_record.file_sha256 = file_sha256
+                await uow.session.flush()
+
             add_mutation_evidence(
                 uow,
                 principal=principal,

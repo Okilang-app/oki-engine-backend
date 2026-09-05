@@ -38,10 +38,10 @@ class AnalyticsService:
         self._uow_factory = uow_factory
         self._authorizer = authorizer
         self.youtube_ingestor = YoutubeAnalyticsIngestor()
-        self.oki_event_ingestor = OkiEventIngestor()
+        self.oki_event_ingestor = OkiEventIngestor(uow_factory)
         self.attribution_service = AttributionService(uow_factory)
-        self.daily_report = DailyProductionReport()
-        self.weekly_report = WeeklyManagementReport()
+        self.daily_report = DailyProductionReport(uow_factory)
+        self.weekly_report = WeeklyManagementReport(uow_factory)
 
     # ------------------------------------------------------------------ #
     # Dashboard queries

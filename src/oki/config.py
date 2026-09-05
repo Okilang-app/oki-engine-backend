@@ -51,6 +51,32 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str | None = None
     elevenlabs_base_url: str = "https://api.elevenlabs.io"
 
+    # YouTube OAuth
+    youtube_client_id: str | None = None
+    youtube_client_secret: str | None = None
+    youtube_oauth_callback_url: str = "http://localhost:8000/api/youtube/callback"
+
+    # Review links (creator portal JWT signing)
+    review_link_secret: str | None = None
+
+    # SMTP / Notifications
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    notification_from_email: str = "noreply@oki.example"
+    telegram_bot_token: str | None = None
+
+    # Observability
+    otel_exporter_endpoint: str | None = None
+
+    # Cost controls
+    elevenlabs_monthly_limit_usd: float = 100.0
+    openai_monthly_limit_usd: float = 200.0
+
+    # Security
+    allowed_hosts: str = "localhost,127.0.0.1"
+
 
 @lru_cache
 def get_settings() -> Settings:

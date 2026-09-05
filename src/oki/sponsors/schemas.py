@@ -18,6 +18,7 @@ class SponsorCandidateResponse(BaseModel):
     status: SponsorStatus
     detection_reason: DetectionReason | None
     confidence: float | None
+    replacement_type: ReplacementType | None = None
     proposed_replacement_ad_id: UUID | None = None
     proposed_replacement_ad_name: str | None = None
     created_at: datetime
@@ -46,6 +47,24 @@ class SponsorDecisionResponse(BaseModel):
     reviewed_by_user_id: UUID
     reviewed_at: datetime
     created_at: datetime
+
+
+class ManualSponsorCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: float = Field(..., ge=0)
+    end_time: float = Field(..., ge=0)
+    sponsor_name: str | None = Field(default=None, max_length=255)
+    replacement_type: ReplacementType | None = None
+
+
+class ManualSponsorUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: float | None = Field(default=None, ge=0)
+    end_time: float | None = Field(default=None, ge=0)
+    sponsor_name: str | None = Field(default=None, max_length=255)
+    replacement_type: ReplacementType | None = None
 
 
 class SponsorListResponse(BaseModel):

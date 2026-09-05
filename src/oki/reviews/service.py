@@ -200,6 +200,7 @@ class ReviewService:
         principal: Principal,
         reason: str | None,
         correlation_id: UUID,
+        decision: ReviewDecisionType = ReviewDecisionType.REJECTED,
     ) -> ReviewDecisions:
         async with self._uow_factory() as uow:
             package = await uow.session.scalar(
@@ -216,7 +217,7 @@ class ReviewService:
             record = ReviewDecisions(
                 organization_id=package.organization_id,
                 package_version_id=version.id,
-                decision=ReviewDecisionType.REJECTED,
+                decision=decision,
                 reason=reason,
                 decided_by_user_id=principal.user_id,
                 correlation_id=correlation_id,
@@ -224,6 +225,29 @@ class ReviewService:
             uow.session.add(record)
             await uow.session.flush()
             return record
+
+    async def get_versions_by_job(
+        self,
+        job_id: UUID,
+        principal: Principal,
+    ) -> list[ReviewPackageVersions]:
+        async with self._uow_factory() as uow:
+            package = await uow.session.scalar(
+                select(ReviewPackages).where(ReviewPackages.job_id == job_id)
+            )
+            if package is None:
+                self._not_found("package_not_found", "Review package not found")
+            self._authorizer.require(
+                principal,
+                Action.CREATOR_REVIEW_SUBMIT,
+                self._scope(package.organization_id),
+            )
+            result = await uow.session.scalars(
+                select(ReviewPackageVersions)
+                .where(ReviewPackageVersions.package_id == package.id)
+                .order_by(ReviewPackageVersions.version_number.desc())
+            )
+            return list(result.all())
 
     async def _latest_version(
         self,

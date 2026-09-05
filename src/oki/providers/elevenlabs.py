@@ -4,6 +4,7 @@ from __future__ import annotations
 import httpx
 
 from oki.config import Settings
+from oki.providers.cost_guard import check_cost
 
 
 class ElevenLabsClient:
@@ -35,6 +36,10 @@ class ElevenLabsClient:
         }
         if language_code:
             payload["language_code"] = language_code
+
+        # Rough estimate: ~$0.30 per 1 000 characters on standard voices
+        estimated = len(ssml or text) / 1000 * 0.30
+        await check_cost("elevenlabs", estimated_cost_usd=estimated)
 
         async with httpx.AsyncClient() as client:
             response = await client.post(

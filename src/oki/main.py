@@ -1,12 +1,16 @@
+import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from oki.api.errors import register_problem_handlers
+from oki.api.errors import ProblemException, register_problem_handlers
 from oki.api.middleware import install_middleware
 from oki.config import Settings, get_settings
 from oki.creators.router import router as creator_router
@@ -46,6 +50,8 @@ from oki.finance.router import router as finance_router
 from oki.finance.service import FinanceService
 from oki.jobs.router import router as jobs_router
 from oki.jobs.service import JobService
+from oki.notifications.router import router as notifications_router
+from oki.notifications.service import NotificationService
 from oki.storage.s3 import S3ObjectStore
 
 health_router = APIRouter()
@@ -56,6 +62,52 @@ async def health() -> dict[str, Literal["ok"]]:
     """Report API process availability without requiring authentication."""
 
     return {"status": "ok"}
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory per-IP sliding-window rate limiter.
+
+    Defaults to 10 requests per second per IP. In production this should be
+    backed by Redis (e.g. using ``slowapi`` or a shared store) so limits
+    survive process restarts and work across multiple workers.
+    """
+
+    def __init__(
+        self,
+        app,
+        *,
+        max_requests: int = 10,
+        window_seconds: float = 1.0,
+    ) -> None:
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._windows: dict[str, list[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        async with self._lock:
+            timestamps = self._windows.get(client_ip, [])
+            cutoff = now - self.window_seconds
+            timestamps = [t for t in timestamps if t > cutoff]
+            if len(timestamps) >= self.max_requests:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "type": "https://errors.oki.app/rate_limit_exceeded",
+                        "title": "Rate limit exceeded",
+                        "status": 429,
+                        "detail": "Too many requests. Please slow down.",
+                        "instance": request.url.path,
+                        "code": "rate_limit_exceeded",
+                        "retryable": True,
+                    },
+                )
+            timestamps.append(now)
+            self._windows[client_ip] = timestamps[-self.max_requests * 2 :]
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -89,13 +141,14 @@ async def _identity_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.campaign_service = CampaignService(uow_factory, authorizer)
     app.state.publication_service = PublicationService(uow_factory, authorizer)
     app.state.reviews_service = ReviewService(uow_factory, authorizer)
-    app.state.finance_service = FinanceService(uow_factory, authorizer)
+    app.state.finance_service = FinanceService(uow_factory, authorizer, store)
     app.state.voice_service = VoiceService(uow_factory, authorizer)
     app.state.sponsor_detection_service = SponsorDetectionService(uow_factory, authorizer)
     app.state.sponsor_review_service = SponsorReviewService(uow_factory, authorizer)
     app.state.shorts_service = ShortService(uow_factory, authorizer)
     app.state.analytics_service = AnalyticsService(uow_factory, authorizer)
     app.state.jobs_service = JobService(uow_factory, authorizer)
+    app.state.notifications_service = NotificationService(uow_factory, authorizer)
     async with httpx.AsyncClient() as client:
         app.state.token_verifier = TokenVerifier(
             issuer=settings.keycloak_issuer,
@@ -121,12 +174,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the Oki API application."""
 
     resolved = settings or get_settings()
+
+    # OpenTelemetry
+    if resolved.otel_exporter_endpoint:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        provider = TracerProvider()
+        processor = BatchSpanProcessor(
+            OTLPSpanExporter(endpoint=resolved.otel_exporter_endpoint)
+        )
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+
+    # Sentry
+    if resolved.sentry_dsn:
+        import sentry_sdk
+        sentry_sdk.init(dsn=resolved.sentry_dsn, traces_sample_rate=0.1)
+
+    # Cost guard initialization for ElevenLabs and OpenAI providers
+    from oki.providers.cost_guard import initialize_guard
+    if resolved.elevenlabs_monthly_limit_usd > 0:
+        initialize_guard("elevenlabs", resolved.elevenlabs_monthly_limit_usd)
+    if resolved.openai_monthly_limit_usd > 0:
+        initialize_guard("openai", resolved.openai_monthly_limit_usd)
+
     app = FastAPI(
         title="Oki Creator Localization Engine",
         version="1.0.0",
         lifespan=_identity_lifespan,
     )
     app.state.settings = resolved
+    # RateLimit must be inside CORS so that 429 responses still get
+    # access-control-allow-origin headers. Add it *before*
+    # install_middleware so it ends up wrapped by CORS and Problem.
+    app.add_middleware(RateLimitMiddleware)
     install_middleware(app)
     register_problem_handlers(app)
     app.include_router(health_router)
@@ -149,4 +233,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(finance_router)
     app.include_router(jobs_router)
+    app.include_router(notifications_router)
     return app

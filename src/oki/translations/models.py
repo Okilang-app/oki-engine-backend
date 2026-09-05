@@ -199,6 +199,8 @@ class TranslationSegments(TimestampMixin, VersionMixin, Base):
         nullable=False,
         default=TranslationStatus.PENDING,
     )
+    back_translation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_flag: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class TranslationRevisions(TimestampMixin, VersionMixin, Base):

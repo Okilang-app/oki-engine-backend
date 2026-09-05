@@ -126,12 +126,12 @@ async def test_qa_service_evaluates_all_seven_dimensions() -> None:
     qa = TranslationQaService()
     scores = await qa.evaluate(
         translation_id=uuid4(),
-        segments=[{"text": "Hello world"}],
+        segments=[{"source_text": "Hello world", "translated_text": "Hola mundo"}],
     )
     assert len(scores) == 7
     for dim in QaDimension:
         assert dim in scores
-        assert 1 <= scores[dim] <= 10
+        assert 0 <= scores[dim] <= 100
 
 
 async def test_translation_start_creates_pending_record(

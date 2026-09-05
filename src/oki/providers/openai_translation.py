@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from oki.config import Settings
+from oki.providers.cost_guard import check_cost
 from oki.providers.factory import create_openai_client
 
 
@@ -42,6 +43,10 @@ class OpenAITranslationClient:
             user_prompt += f"\n\nUse this glossary:\n{glossary_lines}"
         if source_language:
             user_prompt = f"Translate from {source_language} to {target_language}:\n\n```\n{text}\n```"
+
+        # Rough estimate: ~$0.02 per 1 000 characters (input + output tokens)
+        estimated = max(len(text), 1) * 2e-5
+        await check_cost("openai", estimated_cost_usd=estimated)
 
         model = self._deployment if self._settings.azure_openai_endpoint else "gpt-4"
         response = await self._client.chat.completions.create(

@@ -26,12 +26,38 @@ class DubSegmentResponse(BaseModel):
     updated_at: datetime
 
 
-class DubbingResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class DubSegmentListResponse(BaseModel):
+    job_id: UUID
+    segments: list[DubSegmentResponse]
 
+
+class DubbingStartRequest(BaseModel):
+    voice_profile_id: UUID | None = None
+    target_language: str | None = None
+
+
+class DubbingStartResponse(BaseModel):
     job_id: UUID
     organization_id: UUID
-    segments: list[DubSegmentResponse]
+    total_segments: int
+    pending_segments: int
+    completed_segments: int
+    failed_segments: int
     status: str
-    created_at: datetime
-    updated_at: datetime
+    voice_profile_id: UUID | None = None
+    target_language: str | None = None
+    segments: list[DubSegmentResponse] = []
+
+
+class DubRegenerateRequest(BaseModel):
+    voice_profile_id: UUID | None = None
+
+
+class DubReviewRequest(BaseModel):
+    approved: bool
+    reason: str | None = None
+
+
+class DubPlaybackResponse(BaseModel):
+    segment_id: UUID
+    playback_url: str

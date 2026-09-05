@@ -271,47 +271,33 @@ class OpenCVRenderService:
             )
             return
 
-        # Concatenate all parts
+        # Concatenate all parts. Always re-encode — never use -c copy.
+        # Source extracts use -c copy (may not start on keyframes) and ads are
+        # re-encoded with libx264. Mixing these with -c copy produces corrupted
+        # output at concat boundaries that passes duration checks but crashes
+        # players. Re-encoding guarantees compatible streams.
         concat_list = tmp / "concat.txt"
         concat_list.write_text("\n".join(f"file '{p}'" for p in parts) + "\n")
 
-        logger.info("[Renderer] Concatenating %d parts...", len(parts))
+        logger.info("[Renderer] Concatenating %d parts (re-encode)...", len(parts))
         await self._run_ffmpeg(
             ffmpeg,
             "-f", "concat", "-safe", "0",
             "-i", str(concat_list),
-            "-c", "copy",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
             "-y", str(output_path),
         )
 
-        # A stream-copy concat can "succeed" and still emit a truncated file when
-        # the parts disagree, so check the runtime rather than just the size —
-        # otherwise a 15-minute render silently ships as a few seconds.
         expected = 0.0
         for part in parts:
             expected += await self._probe_duration(str(part))
         actual = await self._probe_duration(str(output_path))
-        too_short = expected > 0 and actual < expected * 0.98
-
-        if not output_path.exists() or output_path.stat().st_size == 0 or too_short:
-            logger.warning(
-                "[Renderer] Copy-concat unusable (expected %.1fs, got %.1fs); re-encoding...",
-                expected, actual,
+        if not output_path.exists() or output_path.stat().st_size == 0 or (expected > 0 and actual < expected * 0.98):
+            raise RuntimeError(
+                f"Render produced {actual:.1f}s of video but the parts total "
+                f"{expected:.1f}s; refusing to publish a truncated output."
             )
-            await self._run_ffmpeg(
-                ffmpeg,
-                "-f", "concat", "-safe", "0",
-                "-i", str(concat_list),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                "-y", str(output_path),
-            )
-            actual = await self._probe_duration(str(output_path))
-            if expected > 0 and actual < expected * 0.98:
-                raise RuntimeError(
-                    f"Render produced {actual:.1f}s of video but the parts total "
-                    f"{expected:.1f}s; refusing to publish a truncated output."
-                )
 
     async def _probe_duration(self, path: str) -> float:
         """Return a file's duration in seconds, or 0.0 when it cannot be read.
@@ -338,7 +324,12 @@ class OpenCVRenderService:
     async def _extract_segment(
         self, ffmpeg: str, source: Path, output: Path, start: float, end: float
     ) -> None:
-        """Extract a segment from source video."""
+        """Extract a segment from source video.
+
+        Re-encodes with libx264/AAC so the segment is self-contained and
+        carries no broken H.264 reference-frame dependencies from a mid-GOP
+        ``-c copy`` cut. This avoids decoder aborts during the concat pass.
+        """
         duration = end - start
         if duration <= 0:
             return
@@ -347,8 +338,9 @@ class OpenCVRenderService:
             "-ss", str(start),
             "-t", str(duration),
             "-i", str(source),
-            "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
             "-y", str(output),
         )
 
