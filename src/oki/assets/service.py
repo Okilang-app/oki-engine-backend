@@ -365,6 +365,35 @@ class AssetService:
             )
             return AssetDetails(asset=asset, upload=upload)
 
+    async def delete_asset(
+        self,
+        principal: Principal,
+        asset_id: UUID,
+    ) -> None:
+        """Delete an asset and its stored object."""
+        async with self._uow_factory() as uow:
+            asset = await uow.session.get(SourceAsset, asset_id)
+            if asset is None:
+                self._not_found("asset_not_found", "Asset not found")
+
+            self._authorizer.require(
+                principal,
+                Action.ASSET_DELETE,
+                self._scope(asset.organization_id),
+            )
+
+            if asset.storage_key:
+                try:
+                    await self._store.delete_object(asset.storage_key)
+                except Exception:
+                    logger.warning(
+                        "[AssetService] Failed to delete storage object %s for asset %s",
+                        asset.storage_key,
+                        asset_id,
+                    )
+
+            await uow.session.delete(asset)
+
     async def get_playback_url(
         self,
         principal: Principal,

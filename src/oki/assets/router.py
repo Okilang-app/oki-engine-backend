@@ -246,6 +246,15 @@ async def get_asset(
     return _response(await _service(request).get_details(principal, asset_id))
 
 
+@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_asset(
+    request: Request,
+    asset_id: UUID,
+    principal: Principal = Depends(current_principal),
+) -> None:
+    await _service(request).delete_asset(principal, asset_id)
+
+
 def _parse_range(
     range_header: str | None,
     total_size: int,
