@@ -55,6 +55,16 @@ async def get_translation(
     return TranslationResponse.model_validate(translation)
 
 
+@router.get("/translations/{translation_id}/segments", response_model=list[TranslationSegmentResponse])
+async def list_translation_segments(
+    translation_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> list[TranslationSegmentResponse]:
+    segments = await _service(request).list_segments(principal, translation_id)
+    return [TranslationSegmentResponse.model_validate(s) for s in segments]
+
+
 @router.post("/translations/{translation_id}/approve", response_model=TranslationResponse)
 async def approve_translation(
     translation_id: UUID,

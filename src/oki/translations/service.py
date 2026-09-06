@@ -203,6 +203,27 @@ class TranslationService:
             )
             return translation
 
+    async def list_segments(
+        self,
+        principal: Principal,
+        translation_id: UUID,
+    ) -> list[TranslationSegments]:
+        async with self._uow_factory() as uow:
+            translation = await uow.session.get(Translations, translation_id)
+            if translation is None:
+                self._not_found("translation_not_found", "Translation not found")
+            self._authorizer.require(
+                principal,
+                Action.PROJECT_READ,
+                self._scope(translation.organization_id),
+            )
+            rows = await uow.session.scalars(
+                select(TranslationSegments)
+                .where(TranslationSegments.translation_id == translation_id)
+                .order_by(TranslationSegments.sequence_number)
+            )
+            return list(rows)
+
     async def approve(
         self,
         principal: Principal,

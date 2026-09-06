@@ -1,0 +1,40 @@
+.dev-login-container {
+    margin-top: 20px;
+    text-align: center;
+}
+
+.dev-login-divider {
+    display: flex;
+    align-items: center;
+    margin: 16px 0;
+    color: #666;
+    font-size: 14px;
+}
+
+.dev-login-divider::before,
+.dev-login-divider::after {
+    content: "";
+    flex: 1;
+    border-bottom: 1px solid #ddd;
+}
+
+.dev-login-divider span {
+    padding: 0 12px;
+}
+
+.dev-login-btn {
+    display: inline-block;
+    width: 100%;
+    padding: 10px 16px;
+    background-color: #16a34a;
+    color: white;
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.dev-login-btn:hover {
+    background-color: #15803d;
+}

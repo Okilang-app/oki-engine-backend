@@ -106,6 +106,7 @@ services:
     volumes:
       - keycloak_data:/opt/keycloak/data
       - ./deploy/keycloak/oki-realm.json:/opt/keycloak/data/import/oki-realm.json:ro
+      - ./deploy/keycloak/themes/oki-dev:/opt/keycloak/themes/oki-dev:ro
     restart: unless-stopped
 
   clamav:

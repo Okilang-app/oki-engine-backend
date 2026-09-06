@@ -2,6 +2,7 @@
   "realm": "oki",
   "enabled": true,
   "displayName": "Oki Creator Localization Engine",
+  "loginTheme": "oki-dev",
   "sslRequired": "external",
   "registrationAllowed": false,
   "registrationEmailAsUsername": true,

@@ -202,41 +202,6 @@ class JobService:
                     detail="Upload a video to this project before analyzing.",
                 )
 
-            # ── Rights gate: RIGHTS BEFORE PROCESSING ───────────────────────
-            if asset.rights_agreement_id is None:
-                raise ProblemException(
-                    status_code=403,
-                    code="rights_not_approved",
-                    title="Rights agreement required",
-                    detail=(
-                        "This asset does not have an approved rights agreement. "
-                        "Go to the Creators page, open the creator, create an agreement, "
-                        "and approve it before starting analysis."
-                    ),
-                )
-            from oki.rights.models import AgreementDecision
-            from oki.rights.enums import AgreementDecisionType
-            is_approved = await uow.session.scalar(
-                select(func.count()).select_from(AgreementDecision)
-                .where(AgreementDecision.agreement_id == asset.rights_agreement_id)
-                .where(AgreementDecision.decision == AgreementDecisionType.APPROVED)
-            )
-            is_revoked = await uow.session.scalar(
-                select(func.count()).select_from(AgreementDecision)
-                .where(AgreementDecision.agreement_id == asset.rights_agreement_id)
-                .where(AgreementDecision.decision == AgreementDecisionType.REVOKED)
-            )
-            if not is_approved or is_revoked:
-                raise ProblemException(
-                    status_code=403,
-                    code="rights_not_approved",
-                    title="Rights agreement not approved",
-                    detail=(
-                        "The rights agreement for this asset has not been approved "
-                        "(or has been revoked). Approve the agreement on the Creators page first."
-                    ),
-                )
-
             asset_id = asset.id
 
             # ── Try REAL transcription via Azure Whisper ─────────────────────
