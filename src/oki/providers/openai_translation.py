@@ -8,9 +8,11 @@ from oki.providers.factory import create_openai_client
 
 SYSTEM_PROMPT = (
     "You are a professional video localization translator. "
-    "Translate the user's text faithfully into the target language, "
-    "preserving meaning, tone, and length. "
-    "Return ONLY the translated text, no explanations."
+    "Translate faithfully, preserving meaning, tone, and factual accuracy. "
+    "Do not add statements on behalf of the creator. "
+    "Do not change numbers, proper names, or facts. "
+    "Adapt humour only when the function is preserved. "
+    "Flag any ambiguous phrases in the ambiguous_phrases list."
 )
 
 
@@ -28,8 +30,11 @@ class OpenAITranslationClient:
         target_language: str = "es",
         source_language: str | None = None,
         glossary: dict[str, str] | None = None,
+        creator_style: str | None = None,
+        target_duration_seconds: float | None = None,
+        neighbors: list[str] | None = None,
     ) -> dict:
-        """Send text to GPT for translation."""
+        """Send text to GPT for translation with full SOW context."""
         if self._client is None:
             raise RuntimeError(
                 "No OpenAI/Azure API configured. "
@@ -37,14 +42,38 @@ class OpenAITranslationClient:
                 "or OKI_OPENAI_BASE_URL."
             )
 
-        user_prompt = f"Translate to {target_language}:\n\n```\n{text}\n```"
-        if glossary:
-            glossary_lines = "\n".join(f"{k}: {v}" for k, v in glossary.items())
-            user_prompt += f"\n\nUse this glossary:\n{glossary_lines}"
+        lines: list[str] = []
         if source_language:
-            user_prompt = f"Translate from {source_language} to {target_language}:\n\n```\n{text}\n```"
+            lines.append(f"Translate from {source_language} to {target_language}.")
+        else:
+            lines.append(f"Translate to {target_language}.")
 
-        # Rough estimate: ~$0.02 per 1 000 characters (input + output tokens)
+        if creator_style:
+            lines.append(f"Creator voice/style: {creator_style}")
+
+        if target_duration_seconds is not None:
+            lines.append(
+                f"Target spoken duration: ~{target_duration_seconds:.1f}s. "
+                "Shorten phrasing if needed without losing meaning."
+            )
+
+        if neighbors:
+            lines.append("Neighbouring segments for context (do not translate these):")
+            for n in neighbors[:2]:
+                lines.append(f"  - {n}")
+
+        if glossary:
+            lines.append("Glossary (use these exact translations):")
+            for k, v in glossary.items():
+                lines.append(f"  {k} → {v}")
+
+        lines.append(
+            "\nReturn JSON: "
+            '{"translated_text": "...", "ambiguous_phrases": ["..."]}'
+        )
+        lines.append(f"\nSource text:\n```\n{text}\n```")
+
+        user_prompt = "\n".join(lines)
         estimated = max(len(text), 1) * 2e-5
         await check_cost("openai", estimated_cost_usd=estimated)
 
@@ -57,14 +86,20 @@ class OpenAITranslationClient:
             ],
             temperature=0.3,
             max_tokens=2000,
+            response_format={"type": "json_object"},
         )
 
-        translated = response.choices[0].message.content or ""
+        import json
+        raw = json.loads(response.choices[0].message.content or "{}")
+        translated = raw.get("translated_text", "").strip()
+        ambiguous = raw.get("ambiguous_phrases", [])
+
         return {
-            "translated_text": translated.strip(),
+            "translated_text": translated,
             "target_language": target_language,
             "source_language": source_language,
-            "confidence": getattr(response.choices[0], "logprobs", None),  # None for most APIs
+            "ambiguous_phrases": ambiguous,
+            "confidence": getattr(response.choices[0], "logprobs", None),
         }
 
     async def translate_segments(
@@ -72,23 +107,32 @@ class OpenAITranslationClient:
         segments: list[dict],
         target_language: str = "es",
         source_language: str | None = None,
+        glossary: dict[str, str] | None = None,
+        creator_style: str | None = None,
     ) -> list[dict]:
-        """Batch translate a list of transcript segments."""
+        """Batch translate a list of transcript segments with neighbour context."""
         results: list[dict] = []
-        for seg in segments:
+        texts = [s.get("text", "") for s in segments]
+        for i, seg in enumerate(segments):
+            neighbors = [t for j, t in enumerate(texts) if abs(i - j) == 1]
             result = await self.translate(
                 text=seg.get("text", ""),
                 target_language=target_language,
                 source_language=source_language,
+                glossary=glossary,
+                creator_style=creator_style,
+                target_duration_seconds=(
+                    seg.get("end", 0) - seg.get("start", 0) if seg.get("end") else None
+                ),
+                neighbors=neighbors,
             )
-            results.append(
-                {
-                    "id": seg.get("id"),
-                    "start": seg.get("start"),
-                    "end": seg.get("end"),
-                    "original_text": seg.get("text", ""),
-                    "translated_text": result["translated_text"],
-                    "target_language": target_language,
-                }
-            )
+            results.append({
+                "id": seg.get("id"),
+                "start": seg.get("start"),
+                "end": seg.get("end"),
+                "original_text": seg.get("text", ""),
+                "translated_text": result["translated_text"],
+                "ambiguous_phrases": result.get("ambiguous_phrases", []),
+                "target_language": target_language,
+            })
         return results

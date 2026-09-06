@@ -10,7 +10,7 @@ from oki.db.uow import UnitOfWork
 from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, PrincipalMembership
-from oki.translations.enums import QaDimension, TranslationStatus
+from oki.translations.enums import QaDimension, SOW_DIMENSIONS, TranslationStatus
 from oki.translations.models import Translations
 from oki.translations.service import TranslationQaService, TranslationService
 
@@ -128,8 +128,8 @@ async def test_qa_service_evaluates_all_seven_dimensions() -> None:
         translation_id=uuid4(),
         segments=[{"source_text": "Hello world", "translated_text": "Hola mundo"}],
     )
-    assert len(scores) == 7
-    for dim in QaDimension:
+    assert len(scores) == len(SOW_DIMENSIONS)
+    for dim in SOW_DIMENSIONS:
         assert dim in scores
         assert 0 <= scores[dim] <= 100
 
@@ -161,7 +161,7 @@ async def test_translation_start_creates_pending_record(
         await uow.session.execute(
             text(
                 "insert into localization_jobs (id, organization_id, project_id, state) "
-                "values (:job_id, :org_id, :project_id, 'SOURCE_UPLOADED')"
+                "values (:job_id, :org_id, :project_id, 'AD_REVIEW_REQUIRED')"
             ),
             {"job_id": job_id, "org_id": organization_id, "project_id": project_id},
         )

@@ -31,7 +31,7 @@ class PayoutRuns(TimestampMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -72,7 +72,7 @@ class PayoutInputs(CreatedAtMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -112,7 +112,7 @@ class CreatorPayouts(CreatedAtMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -155,7 +155,7 @@ class PayoutApprovals(CreatedAtMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -184,7 +184,7 @@ class FinanceExports(CreatedAtMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),

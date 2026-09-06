@@ -51,7 +51,7 @@ class Speakers(CreatedAtMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -84,7 +84,7 @@ class TranscriptSegments(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -130,7 +130,7 @@ class TranscriptWords(Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     segment_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -150,7 +150,7 @@ class Scenes(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -181,7 +181,7 @@ class OcrSpans(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -214,7 +214,7 @@ class NamedEntities(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -250,7 +250,7 @@ class SafetyLabels(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -282,7 +282,7 @@ class AudioRegions(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -315,7 +315,7 @@ class AnalysisRevisions(TimestampMixin, VersionMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("uuidv7()")
+        PostgreSQLUUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()")
     )
     organization_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),

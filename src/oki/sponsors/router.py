@@ -144,6 +144,64 @@ async def replace_sponsor(
     )
 
 
+@router.get("/sponsors/{segment_id}/preview-url")
+async def get_sponsor_preview_url(
+    segment_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Return a presigned URL for the replacement ad assigned to this sponsor segment."""
+    from oki.sponsors.models import AdSegments
+    from oki.ads.models import InternalAd
+    from oki.identity.enums import Action
+    from oki.identity.schemas import ResourceScope
+
+    svc = _detection_service(request)
+    async with svc._uow_factory() as uow:
+        segment = await uow.session.get(AdSegments, segment_id)
+        if segment is None:
+            raise ProblemException(
+                status_code=404,
+                code="ad_segment_not_found",
+                title="Ad segment not found",
+                detail=f"No ad segment with id {segment_id}",
+            )
+        svc._authorizer.require(
+            principal,
+            Action.PROJECT_READ,
+            ResourceScope(organization_id=segment.organization_id),
+        )
+        if not segment.proposed_replacement_ad_id:
+            raise ProblemException(
+                status_code=404,
+                code="no_replacement_ad",
+                title="No replacement ad assigned",
+                detail="This segment has no replacement ad. Assign one via the replace endpoint first.",
+            )
+        ad = await uow.session.get(InternalAd, segment.proposed_replacement_ad_id)
+        if ad is None or not ad.storage_key:
+            raise ProblemException(
+                status_code=404,
+                code="ad_file_missing",
+                title="Replacement ad file not found",
+                detail="The replacement ad has no video file uploaded.",
+            )
+
+    store = getattr(request.app.state, "s3_store", None)
+    if store is None:
+        raise ProblemException(
+            status_code=503, code="storage_unavailable",
+            title="Storage unavailable", detail="S3 store not configured.",
+        )
+    url = await store.presign_get(key=ad.storage_key, expires_in=3600)
+    return {
+        "playback_url": url,
+        "segment_id": str(segment_id),
+        "ad_id": str(ad.id),
+        "ad_name": ad.name,
+    }
+
+
 @router.post("/jobs/{job_id}/sponsors/manual", response_model=SponsorCandidateResponse, status_code=status.HTTP_201_CREATED)
 async def create_manual_sponsor(
     job_id: UUID,

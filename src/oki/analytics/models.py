@@ -31,7 +31,7 @@ class YoutubeMetricPoints(TimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -65,7 +65,7 @@ class OkiConversionEvents(TimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -112,7 +112,7 @@ class AttributionLinks(CreatedAtMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -144,7 +144,7 @@ class MetricIngestionRuns(TimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -179,7 +179,7 @@ class CostLedgerEntries(TimestampMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),

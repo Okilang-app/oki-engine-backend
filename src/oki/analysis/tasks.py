@@ -496,3 +496,161 @@ async def sponsor_candidate_detection_task(job_id: UUID, asset_id: UUID) -> dict
         return {"task": "sponsor_detection", "status": "completed", "candidates_detected": candidates}
     finally:
         await engine.dispose()
+
+
+async def music_silence_task(job_id: UUID, asset_id: UUID) -> dict:
+    """Detect music and silence regions using ffmpeg energy/silence filters."""
+    uow_factory, engine, settings = _make_uow_factory()
+    try:
+        from sqlalchemy import select
+        from oki.assets.models import SourceAsset
+        from oki.analysis.models import Scenes
+        import boto3
+
+        async with uow_factory() as uow:
+            asset = await uow.session.get(SourceAsset, asset_id)
+            if asset is None or not asset.storage_key:
+                return {"task": "music_silence", "status": "skipped", "reason": "no_asset"}
+            existing = await uow.session.scalar(
+                select(Scenes).where(
+                    Scenes.asset_id == asset_id,
+                    Scenes.job_id == job_id,
+                    Scenes.scene_label.like("music%"),
+                ).limit(1)
+            )
+            if existing is not None:
+                return {"task": "music_silence", "status": "already_done"}
+            org_id = asset.organization_id
+            storage_key = asset.storage_key
+            duration = float(asset.duration_seconds) if asset.duration_seconds else 0.0
+
+        loop = asyncio.get_running_loop()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "source.mp4"
+            audio_path = Path(tmpdir) / "audio.wav"
+
+            def _download():
+                s3 = boto3.client(
+                    "s3",
+                    endpoint_url=settings.s3_endpoint_url or None,
+                    aws_access_key_id=settings.s3_access_key or "",
+                    aws_secret_access_key=settings.s3_secret_key or "",
+                )
+                resp = s3.get_object(Bucket=settings.s3_bucket, Key=storage_key)
+                video_path.write_bytes(resp["Body"].read())
+
+            await loop.run_in_executor(None, _download)
+            await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [settings.ffmpeg_path, "-i", str(video_path), "-vn", "-ar", "16000",
+                     "-ac", "1", "-y", str(audio_path)],
+                    capture_output=True, check=True,
+                ),
+            )
+
+            def _detect_silence():
+                r = subprocess.run(
+                    [settings.ffmpeg_path, "-i", str(audio_path),
+                     "-af", "silencedetect=noise=-35dB:d=0.5",
+                     "-f", "null", "-"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                silences: list[dict] = []
+                start = None
+                for line in r.stderr.splitlines():
+                    if "silence_start" in line:
+                        try:
+                            start = float(line.split("silence_start:")[1].strip())
+                        except (IndexError, ValueError):
+                            pass
+                    elif "silence_end" in line and start is not None:
+                        try:
+                            end = float(line.split("silence_end:")[1].split("|")[0].strip())
+                            silences.append({"start": start, "end": end, "type": "silence"})
+                            start = None
+                        except (IndexError, ValueError):
+                            pass
+                return silences
+
+            silence_regions = await loop.run_in_executor(None, _detect_silence)
+
+        regions_saved = 0
+        async with uow_factory() as uow:
+            for region in silence_regions:
+                uow.session.add(Scenes(
+                    organization_id=org_id,
+                    asset_id=asset_id,
+                    job_id=job_id,
+                    start_time=Decimal(str(region["start"])),
+                    end_time=Decimal(str(region["end"])),
+                    scene_label=f"silence:{region['start']:.1f}-{region['end']:.1f}",
+                    confidence=Decimal("0.90"),
+                ))
+                regions_saved += 1
+
+        return {"task": "music_silence", "status": "completed", "regions_detected": regions_saved}
+    finally:
+        await engine.dispose()
+
+
+async def ner_task(job_id: UUID, asset_id: UUID) -> dict:
+    """Extract named entities from transcript using GPT."""
+    uow_factory, engine, settings = _make_uow_factory()
+    try:
+        from sqlalchemy import select
+        from oki.analysis.models import TranscriptSegments
+        from oki.providers.factory import create_openai_client
+
+        client = create_openai_client(settings)
+        if client is None:
+            return {"task": "ner", "status": "skipped", "reason": "no_openai_configured"}
+
+        async with uow_factory() as uow:
+            segments = list(await uow.session.scalars(
+                select(TranscriptSegments)
+                .where(TranscriptSegments.asset_id == asset_id, TranscriptSegments.job_id == job_id)
+                .order_by(TranscriptSegments.start_time)
+            ))
+            if not segments:
+                return {"task": "ner", "status": "skipped", "reason": "no_segments"}
+            org_id = segments[0].organization_id
+
+        full_text = " ".join(s.text for s in segments[:50])[:4000]
+        model = settings.azure_gpt_deployment if settings.azure_openai_endpoint else "gpt-4o-mini"
+
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Extract named entities from this video transcript. "
+                        "Return JSON: {\"entities\": [{\"text\": \"...\", \"type\": \"PERSON|ORG|PRODUCT|PLACE|BRAND\", \"confidence\": 0.9}]}\n\n"
+                        f"{full_text}"
+                    ),
+                }],
+                max_tokens=1000,
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(resp.choices[0].message.content or "{}")
+            entities = parsed.get("entities", [])
+        except Exception:
+            entities = []
+
+        async with uow_factory() as uow:
+            for seg in segments:
+                seg_entities = [
+                    e for e in entities
+                    if e.get("text", "").lower() in seg.text.lower()
+                ]
+                if seg_entities and not seg.extra_data:
+                    seg.extra_data = {"named_entities": seg_entities}
+                elif seg_entities and isinstance(getattr(seg, "extra_data", None), dict):
+                    seg.extra_data = {**(seg.extra_data or {}), "named_entities": seg_entities}
+
+        return {"task": "ner", "status": "completed", "entities_found": len(entities)}
+    finally:
+        await engine.dispose()

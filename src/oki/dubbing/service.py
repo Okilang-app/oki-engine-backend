@@ -3,7 +3,7 @@ from collections.abc import Callable
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from oki.api.errors import ProblemException
 from oki.config import Settings
@@ -12,7 +12,7 @@ from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, ResourceScope
 from oki.dubbing.models import DubAttempt, DubSegment
-from oki.dubbing.schemas import DubbingStartResponse
+from oki.dubbing.schemas import DubCancelResponse, DubbingStartResponse
 from oki.jobs.enums import WorkflowState
 from oki.jobs.models import LocalizationJob
 from oki.providers.elevenlabs import ElevenLabsClient
@@ -55,17 +55,23 @@ class DubbingService:
                 ResourceScope(organization_id=job.organization_id),
             )
 
-            # TODO: detailed consent validation block (Task 4)
+            # Gate: job must be in TRANSLATION_REVIEW
+            if job.state != WorkflowState.TRANSLATION_REVIEW:
+                raise ProblemException(
+                    status_code=409,
+                    code="invalid_workflow_state",
+                    title="Dubbing cannot start yet",
+                    detail=(
+                        f"Translation must be approved before starting dubbing. "
+                        f"Current state: {job.state}. "
+                        "Go to the Translation page and approve the translation first."
+                    ),
+                )
 
-            # Check workflow state — log warning if unexpected, but don't block for MVP
-            allowed_states = {
-                WorkflowState.TRANSLATION_REVIEW,
-                WorkflowState.DUBBING_RUNNING,
-                WorkflowState.AUDIO_REVIEW,
-                WorkflowState.AD_REVIEW_REQUIRED,
-            }
-            if job.state not in allowed_states:
-                pass  # MVP: allow dubbing from any state
+            # Transition job state via state machine (TRANSLATION_REVIEW → DUBBING_RUNNING)
+            from oki.jobs.state_machine import WorkflowStateMachine
+            from oki.jobs.enums import WorkflowEvent
+            WorkflowStateMachine().transition(job, WorkflowEvent.START_DUBBING)
 
             # Load translation segments for this job
             from oki.translations.models import TranslationSegments, Translations
@@ -105,9 +111,6 @@ class DubbingService:
             await uow.session.execute(
                 delete(DubSegment).where(DubSegment.job_id == job_id)
             )
-
-            # Update workflow state
-            job.state = WorkflowState.DUBBING_RUNNING
 
             segments: list[DubSegment] = []
             for idx, src in enumerate(source_segments):
@@ -372,6 +375,60 @@ class DubbingService:
             await uow.session.flush()
             await uow.session.refresh(segment)
             return segment
+
+    async def cancel(
+        self,
+        principal: Principal,
+        job_id: UUID,
+    ) -> DubCancelResponse:
+        """Cancel all pending/in-progress dubbing work for a job."""
+        async with self._uow_factory() as uow:
+            job = await uow.session.get(LocalizationJob, job_id)
+            if job is None:
+                self._not_found("job_not_found", "Job not found")
+
+            self._authorizer.require(
+                principal,
+                Action.PROJECT_READ,
+                ResourceScope(organization_id=job.organization_id),
+            )
+
+            cancellable_segment_statuses = ("pending", "generating")
+            result = await uow.session.execute(
+                update(DubSegment)
+                .where(
+                    DubSegment.job_id == job_id,
+                    DubSegment.status.in_(cancellable_segment_statuses),
+                )
+                .values(status="cancelled")
+                .returning(DubSegment.id)
+            )
+            cancelled_segment_ids = [row[0] for row in result.fetchall()]
+            cancelled_segments = len(cancelled_segment_ids)
+
+            cancelled_attempts = 0
+            if cancelled_segment_ids:
+                attempt_result = await uow.session.execute(
+                    update(DubAttempt)
+                    .where(
+                        DubAttempt.dub_segment_id.in_(cancelled_segment_ids),
+                        DubAttempt.status.in_(("pending", "processing")),
+                    )
+                    .values(status="cancelled")
+                    .returning(DubAttempt.id)
+                )
+                cancelled_attempts = len(attempt_result.fetchall())
+
+            from oki.jobs.enums import WorkflowState
+
+            job.state = WorkflowState.CANCELLED
+
+            return DubCancelResponse(
+                job_id=job_id,
+                cancelled_segments=cancelled_segments,
+                cancelled_attempts=cancelled_attempts,
+                status="cancelled",
+            )
 
     @staticmethod
     def _scope(organization_id: UUID) -> ResourceScope:

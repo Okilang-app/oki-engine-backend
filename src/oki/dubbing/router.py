@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request, status
 from oki.identity.dependencies import current_principal
 from oki.identity.schemas import Principal
 from oki.dubbing.schemas import (
+    DubCancelResponse,
     DubPlaybackResponse,
     DubRegenerateRequest,
     DubReviewRequest,
@@ -111,6 +112,18 @@ async def review_dub_segment(
         reason=payload.reason,
     )
     return DubSegmentResponse.model_validate(segment)
+
+
+@router.post(
+    "/jobs/{job_id}/dub/cancel",
+    response_model=DubCancelResponse,
+)
+async def cancel_dubbing(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> DubCancelResponse:
+    return await _service(request).cancel(principal, job_id)
 
 
 @router.get(

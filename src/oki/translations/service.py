@@ -2,14 +2,14 @@ from collections.abc import Callable
 from typing import Any, NoReturn
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oki.api.errors import ProblemException
 from oki.db.uow import UnitOfWork
 from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, ResourceScope
-from oki.translations.enums import QaDimension, TranslationStatus
+from oki.translations.enums import QaDimension, SOW_DIMENSIONS, PASS_FAIL_DIMENSIONS, TranslationStatus
 from oki.jobs.models import LocalizationJob
 from oki.translations.models import (
     TranslationComments,
@@ -32,10 +32,12 @@ class TranslationService:
         target_language: str,
         source_language: str = "en",
     ) -> Translations:
-        """Start a new translation for the given job and language pair.
+        """Start a new translation for the given job and language pair."""
+        from oki.jobs.enums import WorkflowEvent, WorkflowState
+        from oki.jobs.state_machine import WorkflowStateMachine
+        from oki.sponsors.models import AdSegments
+        from oki.sponsors.enums import SponsorStatus
 
-        TODO: integrate real asset lookup and source segment seeding.
-        """
         async with self._uow_factory() as uow:
             job = await uow.session.scalar(
                 select(LocalizationJob)
@@ -50,6 +52,37 @@ class TranslationService:
                 Action.PROJECT_READ,
                 self._scope(organization_id),
             )
+
+            # Gate 1: job must be in AD_REVIEW_REQUIRED
+            if job.state != WorkflowState.AD_REVIEW_REQUIRED:
+                raise ProblemException(
+                    status_code=409,
+                    code="invalid_workflow_state",
+                    title="Translation cannot start yet",
+                    detail=(
+                        f"Ad review must be completed before starting translation. "
+                        f"Current state: {job.state}. "
+                        "Review all sponsor segments on the Sponsors page first."
+                    ),
+                )
+
+            # Gate 2: all detected ad segments must be actioned
+            unreviewed = await uow.session.scalar(
+                select(func.count()).select_from(AdSegments)
+                .where(AdSegments.job_id == job_id)
+                .where(AdSegments.status == SponsorStatus.DETECTED)
+            )
+            if unreviewed:
+                raise ProblemException(
+                    status_code=409,
+                    code="ad_review_incomplete",
+                    title="Ad review incomplete",
+                    detail=(
+                        f"{unreviewed} sponsor segment(s) still need review. "
+                        "Approve, reject, or replace every segment before starting translation."
+                    ),
+                )
+
             from oki.assets.models import SourceAsset
             asset_record = await uow.session.scalar(
                 select(SourceAsset)
@@ -64,6 +97,9 @@ class TranslationService:
                     .limit(1)
                 )
             real_asset_id = asset_record.id if asset_record else job_id
+
+            # Transition job state via state machine
+            WorkflowStateMachine().transition(job, WorkflowEvent.START_TRANSLATION)
 
             translation = Translations(
                 organization_id=organization_id,
@@ -120,7 +156,10 @@ class TranslationService:
         principal: Principal,
         translation_id: UUID,
     ) -> Translations:
-        """Submit a translation for review."""
+        """Approve translation and advance job to TRANSLATION_REVIEW."""
+        from oki.jobs.enums import WorkflowEvent, WorkflowState
+        from oki.jobs.state_machine import WorkflowStateMachine
+
         async with self._uow_factory() as uow:
             translation = await uow.session.get(Translations, translation_id)
             if translation is None:
@@ -131,6 +170,12 @@ class TranslationService:
                 self._scope(translation.organization_id),
             )
             translation.status = TranslationStatus.REVIEW_PENDING
+
+            # Advance job state from TRANSLATION_RUNNING → TRANSLATION_REVIEW
+            job = await uow.session.get(LocalizationJob, translation.job_id)
+            if job and job.state == WorkflowState.TRANSLATION_RUNNING:
+                WorkflowStateMachine().transition(job, WorkflowEvent.REQUEST_TRANSLATION_REVIEW)
+
             await uow.session.flush()
             return translation
 
@@ -192,12 +237,15 @@ class TranslationService:
 
 
 class TranslationQaService:
+    # Pass/fail dimensions use 100 (pass) or 0 (fail) scores
+    HARD_FAIL_THRESHOLD = 60
+
     async def evaluate(
         self,
         translation_id: UUID,
         segments: list[dict[str, Any]],
     ) -> dict[QaDimension, int]:
-        """Evaluate translation across 7 QA dimensions using GPT."""
+        """Evaluate translation across SOW Section 8.6 QA dimensions using GPT."""
         import json
         from oki.config import Settings
         from oki.providers.factory import create_openai_client
@@ -206,7 +254,7 @@ class TranslationQaService:
         client = create_openai_client(settings)
 
         if client is None or not segments:
-            return {dim: 70 for dim in QaDimension}
+            return {dim: 70 for dim in SOW_DIMENSIONS}
 
         model = (
             settings.azure_gpt_deployment
@@ -219,11 +267,19 @@ class TranslationQaService:
             for s in sample
         )
         prompt = (
-            "Rate this translation across 7 dimensions. Return JSON with integer scores 0-100.\n"
-            "Dimensions: accuracy, fluency, terminology, style, locale, format, safety.\n\n"
-            f"{pairs[:3000]}\n\n"
-            'Return JSON only: {"accuracy": N, "fluency": N, "terminology": N, '
-            '"style": N, "locale": N, "format": N, "safety": N}'
+            "You are a professional localization QA reviewer. "
+            "Evaluate this translated video transcript according to the Oki SOW Section 8.6 criteria.\n\n"
+            "Scoring:\n"
+            "- meaning_accuracy: 0-100 (semantic faithfulness to source)\n"
+            "- naturalness: 0-100 (sounds natural in target language)\n"
+            "- timing_fit: 0-100 (translation length fits original audio timing)\n"
+            "- terminology: 100=pass, 0=fail (brand names, product names correct)\n"
+            "- named_entities: 100=pass, 0=fail (numbers, names, facts unchanged)\n"
+            "- brand_safety: 100=pass, 0=fail (no disallowed claims or off-brand content)\n"
+            "- creator_voice_match: 0-100 (preserves creator's tone and personality)\n\n"
+            f"Segments:\n{pairs[:3000]}\n\n"
+            "Return JSON: {\"meaning_accuracy\": N, \"naturalness\": N, \"timing_fit\": N, "
+            "\"terminology\": N, \"named_entities\": N, \"brand_safety\": N, \"creator_voice_match\": N}"
         )
 
         try:
@@ -231,13 +287,24 @@ class TranslationQaService:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=200,
+                max_tokens=300,
                 response_format={"type": "json_object"},
             )
             raw = json.loads(resp.choices[0].message.content or "{}")
             return {
                 dim: max(0, min(100, int(raw.get(dim.value, 70))))
-                for dim in QaDimension
+                for dim in SOW_DIMENSIONS
             }
         except Exception:
-            return {dim: 70 for dim in QaDimension}
+            return {dim: 70 for dim in SOW_DIMENSIONS}
+
+    def is_critical_fail(self, scores: dict[QaDimension, int]) -> bool:
+        """Return True if any hard-fail condition blocks dubbing (SOW 8.6)."""
+        for dim in PASS_FAIL_DIMENSIONS:
+            if scores.get(dim, 100) == 0:
+                return True
+        if scores.get(QaDimension.MEANING_ACCURACY, 100) < self.HARD_FAIL_THRESHOLD:
+            return True
+        if scores.get(QaDimension.NATURALNESS, 100) < self.HARD_FAIL_THRESHOLD:
+            return True
+        return False

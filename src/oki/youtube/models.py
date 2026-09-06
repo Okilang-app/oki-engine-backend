@@ -26,7 +26,7 @@ class OAuthConnection(TimestampMixin, VersionMixin, Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -73,7 +73,7 @@ class AuthorizedChannel(Base):
     id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         primary_key=True,
-        server_default=text("uuidv7()"),
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"),

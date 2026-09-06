@@ -61,3 +61,10 @@ class DubReviewRequest(BaseModel):
 class DubPlaybackResponse(BaseModel):
     segment_id: UUID
     playback_url: str
+
+
+class DubCancelResponse(BaseModel):
+    job_id: UUID
+    cancelled_segments: int
+    cancelled_attempts: int
+    status: str

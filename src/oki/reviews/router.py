@@ -15,8 +15,10 @@ from oki.reviews.schemas import (
     CommentResponse,
     DecisionRequest,
     ReviewDecisionResponse,
+    ReviewPackageDetailResponse,
     ReviewPackageResponse,
     ReviewPackageVersionResponse,
+    ReviewSegmentSummary,
 )
 from oki.reviews.service import ReviewService
 
@@ -179,6 +181,120 @@ async def create_creator_link(
         algorithm="HS256",
     )
     return {"token": token, "expires_in_days": 7}
+
+
+@router.get("/reviews/{job_id}/detail", response_model=ReviewPackageDetailResponse)
+async def get_review_detail(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> ReviewPackageDetailResponse:
+    """Return full review package with segments, versions, and presigned preview URLs."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from oki.config import Settings
+    from oki.db.uow import UnitOfWork
+    from oki.assets.models import SourceAsset
+    from oki.renders.models import RenderJob
+    from oki.translations.models import TranslationSegments, Translations
+    from oki.reviews.models import ReviewDecisions
+    import boto3
+
+    details = await _service(request).get_package_by_job(job_id, principal)
+    versions = await _service(request).get_versions_by_job(job_id, principal)
+
+    settings = Settings()
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=str(settings.s3_endpoint_url) if settings.s3_endpoint_url else None,
+        aws_access_key_id=settings.s3_access_key or "",
+        aws_secret_access_key=settings.s3_secret_key or "",
+    )
+
+    engine = create_async_engine(settings.database_url)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    original_preview_url: str | None = None
+    localized_preview_url: str | None = None
+    segments_out: list[ReviewSegmentSummary] = []
+    latest_decision: str | None = None
+
+    try:
+        async with UnitOfWork(session_factory) as uow:
+            # Original source presigned URL
+            asset = await uow.session.scalar(
+                select(SourceAsset)
+                .where(SourceAsset.localization_job_id == job_id, SourceAsset.status == "active")
+                .limit(1)
+            )
+            if asset and asset.storage_key:
+                try:
+                    original_preview_url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": settings.s3_bucket, "Key": asset.storage_key},
+                        ExpiresIn=3600,
+                    )
+                except Exception:
+                    pass
+
+            # Localized output presigned URL (latest completed render)
+            render = await uow.session.scalar(
+                select(RenderJob)
+                .where(RenderJob.job_id == job_id, RenderJob.output_storage_key.isnot(None))
+                .order_by(RenderJob.created_at.desc())
+                .limit(1)
+            )
+            if render and render.output_storage_key:
+                try:
+                    localized_preview_url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": settings.s3_bucket, "Key": render.output_storage_key},
+                        ExpiresIn=3600,
+                    )
+                except Exception:
+                    pass
+
+            # Translation segments
+            translation = await uow.session.scalar(
+                select(Translations).where(Translations.job_id == job_id).limit(1)
+            )
+            if translation:
+                segs = list(await uow.session.scalars(
+                    select(TranslationSegments)
+                    .where(TranslationSegments.translation_id == translation.id)
+                    .order_by(TranslationSegments.sequence_number)
+                ))
+                for s in segs:
+                    segments_out.append(ReviewSegmentSummary(
+                        id=s.id,
+                        start_time=float(s.start_time),
+                        end_time=float(s.end_time),
+                        source_text=s.source_text or "",
+                        translated_text=s.translated_text,
+                        back_translation=s.back_translation,
+                        status=s.status.value if hasattr(s.status, "value") else str(s.status),
+                    ))
+
+            # Latest decision on the package
+            if details.version:
+                dec = await uow.session.scalar(
+                    select(ReviewDecisions)
+                    .where(ReviewDecisions.package_version_id == details.version.id)
+                    .order_by(ReviewDecisions.decided_at.desc())
+                    .limit(1)
+                )
+                if dec:
+                    latest_decision = dec.decision.value if hasattr(dec.decision, "value") else str(dec.decision)
+    finally:
+        await engine.dispose()
+
+    pkg_data = ReviewPackageDetailResponse.model_validate(details.package)
+    pkg_data.original_preview_url = original_preview_url
+    pkg_data.localized_preview_url = localized_preview_url
+    pkg_data.segments = segments_out
+    pkg_data.versions = [ReviewPackageVersionResponse.model_validate(v) for v in versions]
+    pkg_data.latest_decision = latest_decision
+    return pkg_data
 
 
 @router.get("/reviews/creator/{token}")

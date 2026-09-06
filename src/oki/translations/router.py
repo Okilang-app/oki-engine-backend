@@ -55,6 +55,17 @@ async def get_translation(
     return TranslationResponse.model_validate(translation)
 
 
+@router.post("/translations/{translation_id}/approve", response_model=TranslationResponse)
+async def approve_translation(
+    translation_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> TranslationResponse:
+    """Approve a translation — marks it reviewed and advances the job to TRANSLATION_REVIEW."""
+    translation = await _service(request).submit_review(principal, translation_id)
+    return TranslationResponse.model_validate(translation)
+
+
 @router.post(
     "/translations/{translation_id}/segments/{segment_id}/revise",
     response_model=TranslationSegmentResponse,

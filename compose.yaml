@@ -45,7 +45,7 @@ services:
       retries: 12
       start_period: 10s
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     configs:
       - source: postgres_init
         target: /docker-entrypoint-initdb.d/001-oki-role.sql

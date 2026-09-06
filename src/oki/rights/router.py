@@ -77,6 +77,17 @@ def _response(details: AgreementDetails) -> AgreementResponse:
     )
 
 
+@router.get("/creators/{creator_id}/agreements", response_model=list[AgreementResponse])
+async def list_creator_agreements(
+    creator_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> list[AgreementResponse]:
+    service = _service(request)
+    details_list = await service.list_for_creator(principal, creator_id)
+    return [_response(d) for d in details_list]
+
+
 @router.post(
     "/creators/{creator_id}/agreements",
     response_model=AgreementResponse,

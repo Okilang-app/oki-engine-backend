@@ -105,7 +105,7 @@ def _id_column() -> sa.Column[object]:
         "id",
         postgresql.UUID(as_uuid=True),
         primary_key=True,
-        server_default=sa.text("uuidv7()"),
+        server_default=sa.text("gen_random_uuid()"),
     )
 
 

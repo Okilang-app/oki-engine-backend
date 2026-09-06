@@ -25,7 +25,7 @@ APPEND_ONLY_TABLES = (
 
 
 def _id_column() -> sa.Column[object]:
-    return sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("uuidv7()"))
+    return sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()"))
 
 
 def _created_at_column() -> sa.Column[object]:

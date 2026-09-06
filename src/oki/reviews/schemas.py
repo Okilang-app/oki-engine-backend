@@ -85,3 +85,25 @@ class ReviewPackageResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     version: int
+
+    # Injected at query time — not stored in DB
+    original_preview_url: str | None = None
+    localized_preview_url: str | None = None
+    latest_decision: str | None = None
+
+
+class ReviewSegmentSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    start_time: float
+    end_time: float
+    source_text: str
+    translated_text: str | None
+    back_translation: str | None
+    status: str
+
+
+class ReviewPackageDetailResponse(ReviewPackageResponse):
+    segments: list[ReviewSegmentSummary] = []
+    versions: list[ReviewPackageVersionResponse] = []

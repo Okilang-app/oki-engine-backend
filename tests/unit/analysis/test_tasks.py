@@ -18,6 +18,9 @@ def _make_fake_runtime(segments):
             segs = self._segs
 
             class _R:
+                def __iter__(self):
+                    return iter(segs)
+
                 def __aiter__(self):
                     return iter(segs)
 

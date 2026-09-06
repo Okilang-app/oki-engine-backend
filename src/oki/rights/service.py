@@ -376,6 +376,34 @@ class AgreementService:
             await uow.session.flush()
             return consent
 
+    async def list_for_creator(self, principal: Principal, creator_id: UUID) -> list[AgreementDetails]:
+        async with self._uow_factory() as uow:
+            creator = await uow.session.get(Creator, creator_id)
+            if creator is None:
+                self._not_found("creator_not_found", "Creator not found")
+            self._authorizer.require(
+                principal, Action.CREATOR_READ, self._scope(creator.organization_id)
+            )
+            agreements = list(
+                await uow.session.scalars(
+                    select(RightsAgreement)
+                    .where(RightsAgreement.creator_id == creator_id)
+                    .order_by(RightsAgreement.created_at.desc())
+                )
+            )
+            result = []
+            for agreement in agreements:
+                version = await self._latest_version(uow, agreement.id)
+                grants = tuple(
+                    await uow.session.scalars(
+                        select(RightsGrant)
+                        .where(RightsGrant.agreement_version_id == version.id)
+                        .order_by(RightsGrant.created_at)
+                    )
+                )
+                result.append(AgreementDetails(agreement=agreement, version=version, grants=grants))
+            return result
+
     async def get_details(self, principal: Principal, agreement_id: UUID) -> AgreementDetails:
         async with self._uow_factory() as uow:
             agreement, creator = await self._agreement_and_creator(uow, agreement_id)
