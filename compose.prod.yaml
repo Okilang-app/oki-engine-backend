@@ -2,7 +2,7 @@ x-oki-env: &oki-env
   OKI_ENVIRONMENT: production
   OKI_LOG_LEVEL: ${OKI_LOG_LEVEL:-INFO}
   OKI_DATABASE_URL: postgresql+asyncpg://oki:${POSTGRES_PASSWORD}@postgres:5432/oki
-  OKI_VALKEY_URL: valkey://valkey:6379/0
+  OKI_VALKEY_URL: valkey://:${VALKEY_PASSWORD}@valkey:6379/0
   # Real AWS S3 — leave OKI_S3_ENDPOINT_URL empty so boto3 uses AWS directly
   OKI_S3_ENDPOINT_URL: ""
   OKI_S3_PUBLIC_URL: https://${OKI_S3_BUCKET}.s3.${AWS_REGION:-eu-central-1}.amazonaws.com
