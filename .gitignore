@@ -1,3 +1,5 @@
+.claude/
+# IDE
 .worktrees/
 .superpowers/
 .venv/
