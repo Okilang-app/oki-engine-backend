@@ -169,12 +169,16 @@ class TranslationService:
                 Action.PROJECT_READ,
                 self._scope(translation.organization_id),
             )
-            translation.status = TranslationStatus.REVIEW_PENDING
-
-            # Advance job state from TRANSLATION_RUNNING → TRANSLATION_REVIEW
             job = await uow.session.get(LocalizationJob, translation.job_id)
-            if job and job.state == WorkflowState.TRANSLATION_RUNNING:
-                WorkflowStateMachine().transition(job, WorkflowEvent.REQUEST_TRANSLATION_REVIEW)
+
+            if job and job.state == WorkflowState.DUBBING_RUNNING:
+                # Re-approval during dubbing: just mark approved, no state transition
+                translation.status = TranslationStatus.APPROVED
+            else:
+                translation.status = TranslationStatus.REVIEW_PENDING
+                # Advance job state from TRANSLATION_RUNNING → TRANSLATION_REVIEW
+                if job and job.state == WorkflowState.TRANSLATION_RUNNING:
+                    WorkflowStateMachine().transition(job, WorkflowEvent.REQUEST_TRANSLATION_REVIEW)
 
             await uow.session.flush()
             return translation
@@ -308,7 +312,7 @@ class TranslationQaService:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=300,
+                max_completion_tokens=300,
                 response_format={"type": "json_object"},
             )
             raw = json.loads(resp.choices[0].message.content or "{}")

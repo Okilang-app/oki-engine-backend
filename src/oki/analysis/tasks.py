@@ -367,7 +367,7 @@ async def ocr_task(job_id: UUID, asset_id: UUID) -> dict:
                                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}},
                             ],
                         }],
-                        max_tokens=500,
+                        max_completion_tokens=500,
                         temperature=0,
                         response_format={"type": "json_object"},
                     )
@@ -631,7 +631,7 @@ async def ner_task(job_id: UUID, asset_id: UUID) -> dict:
                         f"{full_text}"
                     ),
                 }],
-                max_tokens=1000,
+                max_completion_tokens=1000,
                 temperature=0,
                 response_format={"type": "json_object"},
             )

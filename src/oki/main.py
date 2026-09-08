@@ -76,7 +76,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self,
         app,
         *,
-        max_requests: int = 10,
+        max_requests: int = 60,
         window_seconds: float = 1.0,
     ) -> None:
         super().__init__(app)

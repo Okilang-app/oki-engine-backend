@@ -54,6 +54,28 @@ class ElevenLabsClient:
             response.raise_for_status()
             return response.content
 
+    async def clone_voice(
+        self,
+        name: str,
+        audio_samples: list[tuple[str, bytes, str]],  # (filename, data, content_type)
+        description: str = "",
+    ) -> dict:
+        """Create an Instant Voice Clone and return the ElevenLabs voice object."""
+        if not self._key:
+            raise RuntimeError("ElevenLabs API key not configured.")
+
+        async with httpx.AsyncClient() as client:
+            files = [("files", (fname, data, ctype)) for fname, data, ctype in audio_samples]
+            response = await client.post(
+                f"{self._base}/v1/voices/add",
+                headers={"xi-api-key": self._key},
+                data={"name": name, "description": description},
+                files=files,
+                timeout=120,
+            )
+            response.raise_for_status()
+            return response.json()  # {"voice_id": "...", "name": "..."}
+
     async def list_voices(self) -> list[dict]:
         """Return available ElevenLabs voices."""
         if not self._key:

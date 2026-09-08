@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 
 from oki.api.errors import ProblemException
 from oki.identity.dependencies import current_principal
@@ -33,13 +33,24 @@ def _service(request: Request) -> TranslationService:
 async def start_translation(
     payload: TranslationStartRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     principal: Principal = Depends(current_principal),
 ) -> TranslationResponse:
+    from oki.translations.tasks import translation_execution_task
+
     translation = await _service(request).start(
         principal,
         job_id=payload.job_id,
         target_language=payload.target_language,
         source_language=payload.source_language,
+    )
+    background_tasks.add_task(
+        translation_execution_task,
+        translation_id=translation.id,
+        job_id=translation.job_id,
+        asset_id=translation.asset_id,
+        source_language=translation.source_language,
+        target_language=translation.target_language,
     )
     return TranslationResponse.model_validate(translation)
 
@@ -52,6 +63,33 @@ async def get_translation(
     principal: Principal = Depends(current_principal),
 ) -> TranslationResponse:
     translation = await _service(request).get_translation(principal, job_id, language)
+    return TranslationResponse.model_validate(translation)
+
+
+@router.post("/translations/{translation_id}/execute", response_model=TranslationResponse)
+async def execute_translation(
+    translation_id: UUID,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    principal: Principal = Depends(current_principal),
+) -> TranslationResponse:
+    """Re-fire the translation background task for a stuck/pending translation."""
+    from oki.translations.tasks import translation_execution_task
+    from oki.translations.models import Translations
+
+    async with _service(request)._uow_factory() as uow:
+        translation = await uow.session.get(Translations, translation_id)
+        if translation is None:
+            raise ProblemException(status_code=404, code="not_found", title="Translation not found", detail="")
+
+    background_tasks.add_task(
+        translation_execution_task,
+        translation_id=translation.id,
+        job_id=translation.job_id,
+        asset_id=translation.asset_id,
+        source_language=translation.source_language,
+        target_language=translation.target_language,
+    )
     return TranslationResponse.model_validate(translation)
 
 

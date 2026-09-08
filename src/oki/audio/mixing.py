@@ -92,7 +92,7 @@ class AudioMixer:
                     f"[0:a]volume=1.0[d];"
                     f"[1:a]volume=0.15[m];"
                     f"[d][m]amix=inputs=2:duration=first[out];"
-                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11[final]"
+                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
                 )
             elif ambient_path.exists():
                 mix_inputs = ["-i", str(dialogue_path), "-i", str(ambient_path)]
@@ -100,11 +100,11 @@ class AudioMixer:
                     f"[0:a]volume=1.0[d];"
                     f"[1:a]volume=0.2[m];"
                     f"[d][m]amix=inputs=2:duration=first[out];"
-                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11[final]"
+                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
                 )
             else:
                 mix_inputs = ["-i", str(dialogue_path)]
-                filter_graph = f"[0:a]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11[final]"
+                filter_graph = f"[0:a]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
 
             def _mix():
                 return subprocess.run(

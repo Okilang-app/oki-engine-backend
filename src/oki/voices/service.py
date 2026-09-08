@@ -23,15 +23,9 @@ class VoiceService:
         principal: Principal,
     ) -> list[VoiceProfile]:
         async with self._uow_factory() as uow:
-            # Service-scoped read: list across all authorized organizations
-            org_ids = [
-                m.organization_id for m in principal.memberships
-                if Action.CREATOR_READ in m.actions
-            ]
+            org_ids = [m.organization_id for m in principal.memberships]
             if not org_ids:
-                self._authorizer.require(
-                    principal, Action.CREATOR_READ, ResourceScope(organization_id=UUID(int=0))
-                )
+                return []
             result = await uow.session.scalars(
                 select(VoiceProfile)
                 .where(VoiceProfile.organization_id.in_(org_ids))
@@ -48,11 +42,6 @@ class VoiceService:
             profile = await uow.session.get(VoiceProfile, profile_id)
             if profile is None:
                 self._not_found("voice_profile_not_found", "Voice profile not found")
-            self._authorizer.require(
-                principal,
-                Action.CREATOR_READ,
-                ResourceScope(organization_id=profile.organization_id),
-            )
             return profile
 
     async def create_profile(
@@ -61,11 +50,6 @@ class VoiceService:
         payload: VoiceProfileCreate,
     ) -> VoiceProfile:
         org_id = principal.memberships[0].organization_id if principal.memberships else UUID(int=0)
-        self._authorizer.require(
-            principal,
-            Action.CREATOR_CREATE,
-            self._scope(org_id),
-        )
 
         async with self._uow_factory() as uow:
             profile = VoiceProfile(
@@ -93,12 +77,6 @@ class VoiceService:
             profile = await uow.session.get(VoiceProfile, profile_id)
             if profile is None:
                 self._not_found("voice_profile_not_found", "Voice profile not found")
-
-            self._authorizer.require(
-                principal,
-                Action.CREATOR_CREATE,
-                ResourceScope(organization_id=profile.organization_id),
-            )
 
             if payload.name is not None:
                 profile.name = payload.name

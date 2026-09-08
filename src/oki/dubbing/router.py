@@ -115,6 +115,199 @@ async def review_dub_segment(
 
 
 @router.post(
+    "/jobs/{job_id}/dub/resume",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_dubbing(
+    job_id: UUID,
+    request: Request,
+    background_tasks: __import__("fastapi").BackgroundTasks,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Re-run TTS only for pending segments. Optionally stamps a new voice_profile_id first."""
+    from oki.dubbing.tasks import run_dubbing_task
+    from oki.dubbing.models import DubSegment
+    from oki.jobs.models import LocalizationJob
+    from sqlalchemy import update as sql_update
+    import json as _json
+
+    voice_profile_id: UUID | None = None
+    try:
+        raw = await request.body()
+        data = _json.loads(raw) if raw else {}
+        if data.get("voice_profile_id"):
+            voice_profile_id = UUID(data["voice_profile_id"])
+    except Exception:
+        pass
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        job = await uow.session.get(LocalizationJob, job_id)
+        if job is None:
+            from oki.api.errors import ProblemException
+            raise ProblemException(status_code=404, code="job_not_found", title="Job not found", detail="")
+
+        # Stamp voice_profile_id on all pending segments if provided
+        if voice_profile_id:
+            await uow.session.execute(
+                sql_update(DubSegment)
+                .where(DubSegment.job_id == job_id, DubSegment.status == "pending")
+                .values(voice_profile_id=voice_profile_id)
+            )
+            await uow.session.flush()
+
+    background_tasks.add_task(run_dubbing_task, job_id=job_id, resume_only=True)
+    return {"job_id": str(job_id), "status": "resuming"}
+
+
+@router.post(
+    "/jobs/{job_id}/mix",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def trigger_audio_mix(
+    job_id: UUID,
+    request: Request,
+    background_tasks: __import__("fastapi").BackgroundTasks,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Re-run the audio mix + QA pipeline for a job that already has TTS segments."""
+    from oki.audio.tasks import run_audio_mix_task
+    from oki.audio.models import AudioMixVersion
+    from oki.dubbing.models import DubSegment
+    from sqlalchemy import select
+    from uuid import uuid4
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        from oki.jobs.models import LocalizationJob
+        job = await uow.session.get(LocalizationJob, job_id)
+        if job is None:
+            from oki.api.errors import ProblemException
+            raise ProblemException(status_code=404, code="job_not_found", title="Job not found", detail="")
+
+        prev = await uow.session.scalar(
+            select(AudioMixVersion)
+            .where(AudioMixVersion.job_id == job_id)
+            .order_by(AudioMixVersion.version_number.desc())
+            .limit(1)
+        )
+        version_number = (prev.version_number + 1) if prev else 1
+        mix = AudioMixVersion(
+            organization_id=job.organization_id,
+            job_id=job_id,
+            asset_id=job_id,
+            version_number=version_number,
+            status="pending",
+            mix_plan={},
+            stems={},
+        )
+        uow.session.add(mix)
+        await uow.session.flush()
+        mix_id = mix.id
+
+    background_tasks.add_task(run_audio_mix_task, job_id=job_id, mix_version_id=mix_id)
+    return {"job_id": str(job_id), "mix_version_id": str(mix_id), "status": "queued"}
+
+
+@router.get(
+    "/jobs/{job_id}/mix",
+)
+async def get_audio_mix(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Return latest AudioMixVersion + QA result for a job."""
+    from oki.audio.models import AudioMixVersion, AudioQaResult
+    from sqlalchemy import select
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        mix = await uow.session.scalar(
+            select(AudioMixVersion)
+            .where(AudioMixVersion.job_id == job_id)
+            .order_by(AudioMixVersion.version_number.desc())
+            .limit(1)
+        )
+        if mix is None:
+            return {"status": "not_started"}
+
+        qa = await uow.session.scalar(
+            select(AudioQaResult)
+            .where(AudioQaResult.audio_mix_version_id == mix.id)
+            .order_by(AudioQaResult.created_at.desc())
+            .limit(1)
+        )
+
+    return {
+        "mix_version_id": str(mix.id),
+        "version_number": mix.version_number,
+        "status": mix.status,
+        "output_key": mix.output_asset_reference,
+        "mix_plan": mix.mix_plan,
+        "qa": {
+            "passed": qa.passed,
+            "clipping": qa.clipping_detected,
+            "silence": qa.silence_detected,
+            "loudness_lufs": (qa.loudness_lufs / 1000.0) if qa.loudness_lufs else None,
+            "issues": qa.issues,
+        } if qa else None,
+    }
+
+
+@router.post(
+    "/jobs/{job_id}/dub/complete",
+    status_code=status.HTTP_200_OK,
+)
+async def complete_dubbing(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Advance job from DUBBING_RUNNING → AUDIO_REVIEW once segments are approved."""
+    from oki.jobs.models import LocalizationJob
+    from oki.jobs.enums import WorkflowState, WorkflowEvent
+    from oki.jobs.state_machine import WorkflowStateMachine
+    from oki.dubbing.models import DubSegment
+    from sqlalchemy import select
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        job = await uow.session.get(LocalizationJob, job_id)
+        if job is None:
+            from oki.api.errors import ProblemException
+            raise ProblemException(status_code=404, code="job_not_found", title="Job not found", detail="")
+
+        if job.state != WorkflowState.DUBBING_RUNNING:
+            from oki.api.errors import ProblemException
+            raise ProblemException(
+                status_code=409,
+                code="invalid_workflow_state",
+                title="Job is not in DUBBING_RUNNING state",
+                detail=f"Current state: {job.state}",
+            )
+
+        pending = await uow.session.scalar(
+            select(DubSegment)
+            .where(DubSegment.job_id == job_id, DubSegment.status != "completed")
+            .limit(1)
+        )
+        if pending:
+            from oki.api.errors import ProblemException
+            raise ProblemException(
+                status_code=409,
+                code="segments_not_complete",
+                title="Not all segments are completed",
+                detail="Generate and approve all segments before submitting for audio review.",
+            )
+
+        WorkflowStateMachine().transition(job, WorkflowEvent.REQUEST_AUDIO_REVIEW)
+        await uow.session.flush()
+
+    return {"job_id": str(job_id), "state": "AUDIO_REVIEW"}
+
+
+@router.post(
     "/jobs/{job_id}/dub/cancel",
     response_model=DubCancelResponse,
 )
@@ -124,6 +317,43 @@ async def cancel_dubbing(
     principal: Principal = Depends(current_principal),
 ) -> DubCancelResponse:
     return await _service(request).cancel(principal, job_id)
+
+
+@router.delete(
+    "/jobs/{job_id}/dub",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def reset_dubbing(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> None:
+    """Delete all dub segments for a job and roll back to TRANSLATION_REVIEW."""
+    from sqlalchemy import delete as sql_delete
+    from oki.dubbing.models import DubSegment, DubAttempt
+    from oki.jobs.models import LocalizationJob
+    from oki.jobs.enums import WorkflowState
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        job = await uow.session.get(LocalizationJob, job_id)
+        if job is None:
+            from oki.api.errors import ProblemException
+            raise ProblemException(status_code=404, code="job_not_found", title="Job not found", detail="")
+
+        segment_ids = list(await uow.session.scalars(
+            __import__("sqlalchemy").select(DubSegment.id).where(DubSegment.job_id == job_id)
+        ))
+        if segment_ids:
+            await uow.session.execute(
+                sql_delete(DubAttempt).where(DubAttempt.dub_segment_id.in_(segment_ids))
+            )
+            await uow.session.execute(
+                sql_delete(DubSegment).where(DubSegment.job_id == job_id)
+            )
+
+        job.state = WorkflowState.TRANSLATION_REVIEW
+        await uow.session.flush()
 
 
 @router.get(

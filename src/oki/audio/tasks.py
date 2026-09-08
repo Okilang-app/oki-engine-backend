@@ -1,4 +1,4 @@
-"""Audio mix task — advances mix version through plan and marks completion."""
+"""Audio mix task — delegates to the pipeline in dubbing/tasks.py."""
 from __future__ import annotations
 
 from typing import Any
@@ -17,14 +17,14 @@ async def run_audio_mix_task(
     hatchet_workflow_run_id: str | None = None,
     hatchet_task_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute audio mixing for a localization job mix version.
+    """Re-run the audio mix pipeline for an existing set of TTS segments.
 
-    Marks the mix as processing, runs the mix plan, then saves the result.
-    If stems are present, performs source separation + mixing via AudioMixer.
-    Falls back to plan-only mode when no stems are uploaded.
+    Looks up completed DubSegments for the job and passes them to the pipeline.
     """
+    from sqlalchemy import select
     from oki.audio.models import AudioMixVersion
-    from oki.jobs.models import LocalizationJob
+    from oki.dubbing.models import DubSegment
+    from oki.dubbing.tasks import run_audio_mix_pipeline
 
     settings = Settings()
     engine = create_async_engine(settings.database_url)
@@ -36,52 +36,43 @@ async def run_audio_mix_task(
             if mix is None:
                 return {"mix_version_id": str(mix_version_id), "status": "not_found"}
 
-            job = await uow.session.get(LocalizationJob, job_id)
-            if job is None:
-                return {"job_id": str(job_id), "status": "job_not_found"}
-
-            # Idempotency: already completed
             if mix.status == "completed":
-                return {
-                    "job_id": str(job_id),
-                    "mix_version_id": str(mix_version_id),
-                    "status": "already_done",
-                }
+                return {"mix_version_id": str(mix_version_id), "status": "already_done"}
 
-            mix.status = "processing"
-            current_plan = dict(mix.mix_plan or {})
-            await uow.session.flush()
+            dub_segments = list(await uow.session.scalars(
+                select(DubSegment)
+                .where(
+                    DubSegment.job_id == job_id,
+                    DubSegment.audio_asset_reference.isnot(None),
+                )
+                .order_by(DubSegment.sequence_number)
+            ))
 
-        # Mixing runs outside the transaction
-        from oki.audio.mixing import AudioMixer
+        if not dub_segments:
+            async with UnitOfWork(session_factory) as uow:
+                mix_row = await uow.session.get(AudioMixVersion, mix_version_id)
+                if mix_row:
+                    mix_row.status = "failed"
+                    mix_row.mix_plan = {"error": "no_dubbed_segments"}
+                    await uow.session.flush()
+            return {"job_id": str(job_id), "status": "no_dubbed_segments"}
 
-        mixer = AudioMixer(
-            output_bucket=settings.s3_bucket,
-            s3_endpoint=settings.s3_endpoint_url,
+        tts_results = [
+            {
+                "segment_id": str(s.id),
+                "storage_key": s.audio_asset_reference,
+                "start_time": (s.timing_start_ms / 1000.0) if s.timing_start_ms is not None else None,
+                "end_time": (s.timing_end_ms / 1000.0) if s.timing_end_ms is not None else None,
+                "status": "completed",
+            }
+            for s in dub_segments
+        ]
+
+        return await run_audio_mix_pipeline(
+            job_id=job_id,
+            tts_results=tts_results,
+            session_factory=session_factory,
+            settings=settings,
         )
-        dialogue_tracks = current_plan.get("dialogue_tracks", [])
-        music_stems = current_plan.get("music_stems", [])
-        sfx_stems = current_plan.get("sfx_stems", [])
-
-        mix_plan_result = mixer.mix(
-            dialogue_tracks=dialogue_tracks,
-            music_stems=music_stems,
-            sfx_stems=sfx_stems,
-        )
-
-        async with UnitOfWork(session_factory) as uow:
-            mix = await uow.session.get(AudioMixVersion, mix_version_id)
-            if mix is None:
-                return {"mix_version_id": str(mix_version_id), "status": "lost"}
-            mix.mix_plan = {**current_plan, **mix_plan_result, "steps": ["completed"]}
-            mix.status = "completed"
-            await uow.session.flush()
-
-        return {
-            "job_id": str(job_id),
-            "mix_version_id": str(mix_version_id),
-            "status": "completed",
-            "hatchet_workflow_run_id": hatchet_workflow_run_id,
-        }
     finally:
         await engine.dispose()

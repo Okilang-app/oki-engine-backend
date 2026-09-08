@@ -315,7 +315,7 @@ class JobService:
                                 "Max 50 entities.\n\nTranscript:\n" + full_text[:3000]
                             )}],
                             temperature=0,
-                            max_tokens=1500,
+                            max_completion_tokens=1500,
                             response_format={"type": "json_object"},
                         )
                         import json as _json
