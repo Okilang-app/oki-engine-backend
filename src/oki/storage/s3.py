@@ -21,9 +21,10 @@ class S3ObjectStore:
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.s3_bucket
         self._public_url = settings.s3_public_url
+        endpoint = settings.s3_endpoint_url or None
         self._client = boto3.client(
             "s3",
-            endpoint_url=settings.s3_endpoint_url,
+            endpoint_url=endpoint,
             aws_access_key_id=settings.s3_access_key or "",
             aws_secret_access_key=settings.s3_secret_key or "",
             config=BotoConfig(
@@ -38,7 +39,7 @@ class S3ObjectStore:
         # against the public endpoint the browser will actually use.
         self._presign_client = boto3.client(
             "s3",
-            endpoint_url=settings.s3_public_url or settings.s3_endpoint_url,
+            endpoint_url=settings.s3_public_url or endpoint,
             aws_access_key_id=settings.s3_access_key or "",
             aws_secret_access_key=settings.s3_secret_key or "",
             config=BotoConfig(
