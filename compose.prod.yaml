@@ -158,6 +158,7 @@ services:
     image: oki-worker:latest
     environment:
       <<: *oki-env
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN}
     depends_on:
       postgres:
         condition: service_healthy
