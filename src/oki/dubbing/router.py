@@ -173,9 +173,16 @@ async def trigger_audio_mix(
     """Re-run the audio mix + QA pipeline for a job that already has TTS segments."""
     from oki.audio.tasks import run_audio_mix_task
     from oki.audio.models import AudioMixVersion
-    from oki.dubbing.models import DubSegment
-    from sqlalchemy import select
-    from uuid import uuid4
+    import json as _json
+
+    mix_overrides: dict | None = None
+    try:
+        raw = await request.body()
+        data = _json.loads(raw) if raw else {}
+        if data.get("overrides"):
+            mix_overrides = data["overrides"]
+    except Exception:
+        pass
 
     svc = _service(request)
     async with svc._uow_factory() as uow:
@@ -185,6 +192,7 @@ async def trigger_audio_mix(
             from oki.api.errors import ProblemException
             raise ProblemException(status_code=404, code="job_not_found", title="Job not found", detail="")
 
+        from sqlalchemy import select
         prev = await uow.session.scalar(
             select(AudioMixVersion)
             .where(AudioMixVersion.job_id == job_id)
@@ -198,15 +206,58 @@ async def trigger_audio_mix(
             asset_id=job_id,
             version_number=version_number,
             status="pending",
-            mix_plan={},
+            mix_plan={"overrides": mix_overrides} if mix_overrides else {},
             stems={},
         )
         uow.session.add(mix)
         await uow.session.flush()
         mix_id = mix.id
 
-    background_tasks.add_task(run_audio_mix_task, job_id=job_id, mix_version_id=mix_id)
+    background_tasks.add_task(run_audio_mix_task, job_id=job_id, mix_version_id=mix_id, mix_overrides=mix_overrides)
     return {"job_id": str(job_id), "mix_version_id": str(mix_id), "status": "queued"}
+
+
+@router.get(
+    "/jobs/{job_id}/mix/playback-url",
+)
+async def get_mix_playback_url(
+    job_id: UUID,
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    """Return a presigned URL for the latest completed mix output."""
+    from oki.audio.models import AudioMixVersion
+    from sqlalchemy import select
+    import boto3
+    from oki.config import Settings
+
+    svc = _service(request)
+    async with svc._uow_factory() as uow:
+        mix = await uow.session.scalar(
+            select(AudioMixVersion)
+            .where(AudioMixVersion.job_id == job_id, AudioMixVersion.status == "completed")
+            .order_by(AudioMixVersion.version_number.desc())
+            .limit(1)
+        )
+        if mix is None or not mix.output_asset_reference:
+            from oki.api.errors import ProblemException
+            raise ProblemException(status_code=404, code="no_mix", title="No completed mix found", detail="")
+
+        output_key = mix.output_asset_reference
+
+    settings = Settings()
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=str(settings.s3_public_endpoint_url or settings.s3_endpoint_url or "") or None,
+        aws_access_key_id=settings.s3_access_key or "",
+        aws_secret_access_key=settings.s3_secret_key or "",
+    )
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.s3_bucket, "Key": output_key},
+        ExpiresIn=3600,
+    )
+    return {"url": url, "output_key": output_key}
 
 
 @router.get(

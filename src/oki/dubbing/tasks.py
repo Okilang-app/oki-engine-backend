@@ -198,6 +198,7 @@ async def run_audio_mix_pipeline(
     tts_results: list[dict[str, Any]],
     session_factory: async_sessionmaker,
     settings: Settings,
+    mix_overrides: dict | None = None,
 ) -> dict[str, Any]:
     """
     Full audio mixing pipeline:
@@ -253,6 +254,34 @@ async def run_audio_mix_pipeline(
             )
         source_key = asset.storage_key if asset else None
 
+        # Load any approved replacement ads for this job so their audio is
+        # included in the mix at the correct timecodes.
+        from oki.sponsors.models import AdSegments
+        from oki.ads.models import InternalAd
+
+        ad_tts_extras: list[dict] = []
+        replaced_ads = list(await uow.session.scalars(
+            select(AdSegments)
+            .where(
+                AdSegments.job_id == job_id,
+                AdSegments.status == "replaced",
+                AdSegments.proposed_replacement_ad_id.isnot(None),
+            )
+        ))
+        for ad_seg in replaced_ads:
+            internal_ad = await uow.session.get(InternalAd, ad_seg.proposed_replacement_ad_id)
+            if internal_ad and internal_ad.storage_key:
+                ad_tts_extras.append({
+                    "segment_id": f"ad_{ad_seg.id}",
+                    "storage_key": internal_ad.storage_key,
+                    "start_time": float(ad_seg.start_time),
+                    "end_time": float(ad_seg.end_time),
+                    "status": "completed",
+                })
+        if ad_tts_extras:
+            tts_results = list(tts_results) + ad_tts_extras
+            log.info("Added %d replacement ad audio tracks for job %s", len(ad_tts_extras), job_id)
+
     # ── Create AudioMixVersion record ─────────────────────────────────────
     async with UnitOfWork(session_factory) as uow:
         prev = await uow.session.scalar(
@@ -286,12 +315,12 @@ async def run_audio_mix_pipeline(
             resp = s3.get_object(Bucket=settings.s3_bucket, Key=storage_key)
             dest.write_bytes(resp["Body"].read())
 
-        segment_paths: list[tuple[float | None, float | None, Path]] = []
+        segment_paths: list[tuple[float | None, float | None, Path, str]] = []
         for i, r in enumerate(tts_results):
             dest = tmp / f"seg_{i:04d}.mp3"
             try:
                 await loop.run_in_executor(None, _download_segment, r["storage_key"], dest)
-                segment_paths.append((r.get("start_time"), r.get("end_time"), dest))
+                segment_paths.append((r.get("start_time"), r.get("end_time"), dest, r.get("segment_id", "")))
             except Exception:
                 log.warning("Could not download segment %s", r["storage_key"])
 
@@ -299,10 +328,11 @@ async def run_audio_mix_pipeline(
             return {"status": "no_segments_downloaded"}
 
         # ── Step 2: Assemble full dialogue track with timing ──────────────
+        seg_overrides = (mix_overrides or {}).get("segments", {})
         dialogue_track = tmp / "dialogue.mp3"
         await loop.run_in_executor(
             None,
-            lambda: _assemble_dialogue_track(segment_paths, dialogue_track, ffmpeg),
+            lambda: _assemble_dialogue_track(segment_paths, dialogue_track, ffmpeg, seg_overrides),
         )
 
         dialogue_key = f"dubs/{job_id}/dialogue_master.mp3"
@@ -351,7 +381,9 @@ async def run_audio_mix_pipeline(
             source_key=source_key or dialogue_key,
             output_key=output_key,
             music_keys=[accompaniment_key] if accompaniment_key else None,
-            target_loudness_lufs=-14.0,
+            target_loudness_lufs=float((mix_overrides or {}).get("target_lufs", -14.0)),
+            dialogue_gain_db=float((mix_overrides or {}).get("dialogue_gain_db", 0.0)),
+            ambient_volume=float((mix_overrides or {}).get("ambient_volume", 0.2)),
             s3_access_key=settings.s3_access_key or "",
             s3_secret_key=settings.s3_secret_key or "",
             ffmpeg_path=ffmpeg,
@@ -418,29 +450,37 @@ async def run_audio_mix_pipeline(
 
 
 def _assemble_dialogue_track(
-    segments: list[tuple[float | None, float | None, Path]],
+    segments: list[tuple[float | None, float | None, Path, str]],
     output_path: Path,
     ffmpeg: str,
+    seg_overrides: dict | None = None,
 ) -> None:
     """
     Concatenate TTS segment audio files into one continuous track.
     If timing info is available, insert silence between segments to preserve
-    relative positions. Otherwise simple concatenation.
+    relative positions. seg_overrides is keyed by segment_id and may contain
+    volume_db (dB adjustment) and nudge_ms (timing shift in ms).
     """
     import subprocess
 
-    has_timing = all(start is not None for start, _, _ in segments)
+    overrides = seg_overrides or {}
+    has_timing = all(start is not None for start, _, _, _ in segments)
 
     if has_timing:
-        # Build a filter_complex that places each segment at its start offset
-        # with silence filling gaps.
         inputs = []
         filters = []
-        for i, (start, end, path) in enumerate(segments):
+        for i, (start, end, path, seg_id) in enumerate(segments):
             inputs += ["-i", str(path)]
-            # Pad the segment with silence before it to position it correctly
-            delay_ms = int((start or 0) * 1000)
-            filters.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[s{i}]")
+            ov = overrides.get(seg_id, {})
+            vol_db = float(ov.get("volume_db", 0.0))
+            nudge_ms = int(ov.get("nudge_ms", 0))
+            delay_ms = max(0, int((start or 0) * 1000) + nudge_ms)
+            if vol_db != 0.0:
+                import math
+                vol_linear = 10 ** (vol_db / 20.0)
+                filters.append(f"[{i}:a]volume={vol_linear:.4f},adelay={delay_ms}|{delay_ms}[s{i}]")
+            else:
+                filters.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[s{i}]")
 
         mix_inputs = "".join(f"[s{i}]" for i in range(len(segments)))
         filters.append(f"{mix_inputs}amix=inputs={len(segments)}:duration=longest:normalize=0[out]")
@@ -450,10 +490,10 @@ def _assemble_dialogue_track(
         cmd += inputs
         cmd += ["-filter_complex", filter_str, "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "192k", str(output_path)]
     else:
-        # Simple concatenation via concat demuxer
+        # Simple concatenation via concat demuxer (no timing / no overrides)
         concat_list = output_path.parent / "concat.txt"
         with concat_list.open("w") as f:
-            for _, _, path in segments:
+            for _, _, path, _ in segments:
                 f.write(f"file '{path}'\n")
         cmd = [
             ffmpeg, "-y", "-f", "concat", "-safe", "0",

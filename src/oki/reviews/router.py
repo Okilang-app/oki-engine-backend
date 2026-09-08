@@ -254,6 +254,25 @@ async def get_review_detail(
                 except Exception:
                     pass
 
+            # Fall back to AudioMixVersion if no render output
+            if not localized_preview_url:
+                from oki.audio.models import AudioMixVersion
+                mix = await uow.session.scalar(
+                    select(AudioMixVersion)
+                    .where(AudioMixVersion.job_id == job_id, AudioMixVersion.status == "completed")
+                    .order_by(AudioMixVersion.version_number.desc())
+                    .limit(1)
+                )
+                if mix and mix.output_asset_reference:
+                    try:
+                        localized_preview_url = s3.generate_presigned_url(
+                            "get_object",
+                            Params={"Bucket": settings.s3_bucket, "Key": mix.output_asset_reference},
+                            ExpiresIn=3600,
+                        )
+                    except Exception:
+                        pass
+
             # Translation segments
             translation = await uow.session.scalar(
                 select(Translations).where(Translations.job_id == job_id).limit(1)

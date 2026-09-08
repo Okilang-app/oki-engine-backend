@@ -1,0 +1,91 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}:api-${{ github.sha }},${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}:api-latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/worker.Dockerfile
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}:worker-${{ github.sha }},${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}:worker-latest
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 300s
+          script: |
+            set -e
+            cd /opt/oki
+
+            echo "Pulling latest code..."
+            git pull origin main
+
+            echo "Logging into ECR..."
+            aws ecr get-login-password --region ${{ vars.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ steps.ecr-login.outputs.registry }}
+
+            echo "Pulling new images..."
+            export IMAGE_TAG=${{ github.sha }}
+            export ECR_IMAGE_API=${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}
+            export ECR_IMAGE_WORKER=${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPO }}
+
+            docker compose -f compose.prod.yaml pull api worker
+
+            echo "Running migrations..."
+            docker compose -f compose.prod.yaml run --rm api alembic upgrade head
+
+            echo "Rolling update (zero-downtime)..."
+            docker compose -f compose.prod.yaml up -d --no-deps --wait api worker nginx
+
+            echo "Pruning old images..."
+            docker image prune -f
+
+            echo "Deploy done. Running healthcheck..."
+            sleep 5
+            curl -sf https://${{ vars.API_DOMAIN }}/health | jq .

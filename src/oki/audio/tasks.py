@@ -14,6 +14,7 @@ async def run_audio_mix_task(
     job_id: UUID,
     mix_version_id: UUID,
     *,
+    mix_overrides: dict | None = None,
     hatchet_workflow_run_id: str | None = None,
     hatchet_task_run_id: str | None = None,
 ) -> dict[str, Any]:
@@ -73,6 +74,7 @@ async def run_audio_mix_task(
             tts_results=tts_results,
             session_factory=session_factory,
             settings=settings,
+            mix_overrides=mix_overrides,
         )
     finally:
         await engine.dispose()

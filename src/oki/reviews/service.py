@@ -38,6 +38,8 @@ class ReviewService:
         principal: Principal,
         correlation_id: UUID,
     ) -> ReviewPackages:
+        from oki.reviews.versioning import compute_canonical_hash
+
         async with self._uow_factory() as uow:
             job = await uow.session.get(LocalizationJob, job_id)
             if job is None:
@@ -47,6 +49,13 @@ class ReviewService:
                 Action.CREATOR_REVIEW_SUBMIT,
                 self._scope(job.organization_id),
             )
+            # Idempotent — return existing package if already created
+            existing = await uow.session.scalar(
+                select(ReviewPackages).where(ReviewPackages.job_id == job_id)
+            )
+            if existing is not None:
+                return existing
+
             package = ReviewPackages(
                 organization_id=job.organization_id,
                 job_id=job.id,
@@ -55,6 +64,17 @@ class ReviewService:
                 correlation_id=correlation_id,
             )
             uow.session.add(package)
+            await uow.session.flush()
+
+            version = ReviewPackageVersions(
+                organization_id=job.organization_id,
+                package_id=package.id,
+                version_number=1,
+                canonical_hash=compute_canonical_hash({"job_id": str(job.id)}),
+                material_changed=False,
+                created_by_user_id=principal.user_id,
+            )
+            uow.session.add(version)
             await uow.session.flush()
             return package
 

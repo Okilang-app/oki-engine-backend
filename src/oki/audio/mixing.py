@@ -25,6 +25,8 @@ class AudioMixer:
         output_key: str,
         music_keys: list[str] | None = None,
         target_loudness_lufs: float = -14.0,
+        dialogue_gain_db: float = 0.0,
+        ambient_volume: float = 0.2,
         s3_access_key: str = "",
         s3_secret_key: str = "",
         ffmpeg_path: str = "ffmpeg",
@@ -81,6 +83,10 @@ class AudioMixer:
                 )
 
             # Mix dialogue + ambient with loudness normalization
+            import math as _math
+            d_vol = 10 ** (dialogue_gain_db / 20.0) if dialogue_gain_db != 0.0 else 1.0
+            _limiter = "alimiter=limit=0.841:level=0:attack=5:release=50"
+
             if has_separate_music and music_keys:
                 music_path = tmp / "music.m4a"
                 def _dl_music():
@@ -89,22 +95,22 @@ class AudioMixer:
                 await loop.run_in_executor(None, _dl_music)
                 mix_inputs = ["-i", str(dialogue_path), "-i", str(music_path)]
                 filter_graph = (
-                    f"[0:a]volume=1.0[d];"
-                    f"[1:a]volume=0.15[m];"
+                    f"[0:a]volume={d_vol:.4f}[d];"
+                    f"[1:a]volume={ambient_volume:.4f}[m];"
                     f"[d][m]amix=inputs=2:duration=first[out];"
-                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
+                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,{_limiter}[final]"
                 )
             elif ambient_path.exists():
                 mix_inputs = ["-i", str(dialogue_path), "-i", str(ambient_path)]
                 filter_graph = (
-                    f"[0:a]volume=1.0[d];"
-                    f"[1:a]volume=0.2[m];"
+                    f"[0:a]volume={d_vol:.4f}[d];"
+                    f"[1:a]volume={ambient_volume:.4f}[m];"
                     f"[d][m]amix=inputs=2:duration=first[out];"
-                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
+                    f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,{_limiter}[final]"
                 )
             else:
                 mix_inputs = ["-i", str(dialogue_path)]
-                filter_graph = f"[0:a]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,alimiter=limit=0.841:level=0:attack=5:release=50[final]"
+                filter_graph = f"[0:a]volume={d_vol:.4f},loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,{_limiter}[final]"
 
             def _mix():
                 return subprocess.run(
