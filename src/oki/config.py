@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_bucket: str = "oki-local"
+    s3_region: str = "us-east-1"
     sentry_dsn: str | None = None
     keycloak_issuer: str = "http://127.0.0.1:8080/realms/oki"
     keycloak_audience: str = "oki-api"

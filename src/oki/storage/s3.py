@@ -22,24 +22,23 @@ class S3ObjectStore:
         self._bucket = settings.s3_bucket
         self._public_url = settings.s3_public_url
         endpoint = settings.s3_endpoint_url or None
+        region = settings.s3_region
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint,
+            region_name=region,
             aws_access_key_id=settings.s3_access_key or "",
             aws_secret_access_key=settings.s3_secret_key or "",
             config=BotoConfig(
                 signature_version="s3v4",
                 retries={"max_attempts": 3, "mode": "adaptive"},
-                # Streaming responses hold a connection for the whole download,
-                # so the default pool of 10 is exhausted by a handful of viewers.
                 max_pool_connections=50,
             ),
         )
-        # Separate client for presigned URLs so v4 signatures are computed
-        # against the public endpoint the browser will actually use.
         self._presign_client = boto3.client(
             "s3",
             endpoint_url=settings.s3_public_url or endpoint,
+            region_name=region,
             aws_access_key_id=settings.s3_access_key or "",
             aws_secret_access_key=settings.s3_secret_key or "",
             config=BotoConfig(
