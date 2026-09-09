@@ -76,6 +76,7 @@ class Settings(BaseSettings):
 
     # Security
     allowed_hosts: str = "localhost,127.0.0.1"
+    cors_origins: str | None = None
 
 
 @lru_cache

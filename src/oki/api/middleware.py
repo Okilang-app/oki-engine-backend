@@ -169,9 +169,17 @@ def install_middleware(app: FastAPI) -> None:
     app.add_middleware(ProblemMiddleware)
 
     # Wraps Problem: adds CORS headers to ALL responses (including 500s)
+    from oki.config import get_settings
+    settings = get_settings()
+    cors_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    if settings.cors_origins:
+        cors_origins.extend(settings.cors_origins.split(","))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

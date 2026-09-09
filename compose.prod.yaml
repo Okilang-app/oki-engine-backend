@@ -30,6 +30,7 @@ x-oki-env: &oki-env
   OKI_FFMPEG_PATH: ffmpeg
   OKI_FFPROBE_PATH: ffprobe
   OKI_REVIEW_LINK_SECRET: ${OKI_REVIEW_LINK_SECRET}
+  OKI_CORS_ORIGINS: ${OKI_CORS_ORIGINS:-https://oki-engine.vercel.app}
 
 services:
   # ── Data layer ────────────────────────────────────────────────────────────
