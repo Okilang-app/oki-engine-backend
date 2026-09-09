@@ -20,7 +20,7 @@ class S3ObjectStore:
 
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.s3_bucket
-        self._public_url = settings.s3_public_url
+        self._public_url = settings.s3_public_url or None
         endpoint = settings.s3_endpoint_url or None
         region = settings.s3_region
         self._client = boto3.client(
@@ -37,7 +37,7 @@ class S3ObjectStore:
         )
         self._presign_client = boto3.client(
             "s3",
-            endpoint_url=settings.s3_public_url or endpoint,
+            endpoint_url=self._public_url or endpoint,
             region_name=region,
             aws_access_key_id=settings.s3_access_key or "",
             aws_secret_access_key=settings.s3_secret_key or "",
@@ -45,7 +45,7 @@ class S3ObjectStore:
                 signature_version="s3v4",
                 retries={"max_attempts": 3, "mode": "adaptive"},
             ),
-        ) if settings.s3_public_url else self._client
+        ) if self._public_url else self._client
 
     async def _run(self, method: str, *args: Any, **kwargs: Any) -> Any:
         loop = asyncio.get_running_loop()
