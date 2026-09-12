@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from oki.ads.models import InternalAd
 from oki.assets.models import SourceAsset
+from oki.audio.models import AudioMixVersion
 from oki.config import Settings
 from oki.db.uow import UnitOfWork
 from oki.jobs.models import LocalizationJob
@@ -121,6 +122,19 @@ class OpenCVRenderService:
                         if ad:
                             ad_map[seg.proposed_replacement_ad_id] = ad
 
+            # Load latest completed dubbed audio mix for this job
+            dubbed_mix = await uow.session.scalar(
+                select(AudioMixVersion)
+                .where(
+                    AudioMixVersion.job_id == job.id,
+                    AudioMixVersion.status == "completed",
+                    AudioMixVersion.output_asset_reference.isnot(None),
+                )
+                .order_by(AudioMixVersion.version_number.desc())
+                .limit(1)
+            )
+            dubbed_audio_key = dubbed_mix.output_asset_reference if dubbed_mix else None
+
         ffmpeg = self._settings.ffmpeg_path
         bucket = self._settings.s3_bucket
         source_key = source_asset.storage_key
@@ -143,6 +157,35 @@ class OpenCVRenderService:
                 logger.error("[Renderer] Download FAILED: %s", e)
                 await self._fail(render_job_id, f"Download failed: {e}")
                 return
+
+            # 1b. Replace audio with dubbed mix if available
+            if dubbed_audio_key:
+                dubbed_audio_path = tmp / "dubbed_mix.m4a"
+                try:
+                    logger.info("[Renderer] Downloading dubbed audio: %s", dubbed_audio_key)
+                    resp = self._s3.get_object(Bucket=bucket, Key=dubbed_audio_key)
+                    dubbed_audio_path.write_bytes(resp["Body"].read())
+                    logger.info("[Renderer] Downloaded dubbed audio %d bytes", dubbed_audio_path.stat().st_size)
+
+                    dubbed_source = tmp / "source_dubbed.mp4"
+                    await self._run_ffmpeg(
+                        ffmpeg,
+                        "-i", str(source_path),
+                        "-i", str(dubbed_audio_path),
+                        "-c:v", "copy",
+                        "-map", "0:v:0",
+                        "-map", "1:a:0",
+                        "-shortest",
+                        "-y", str(dubbed_source),
+                    )
+                    if dubbed_source.exists() and dubbed_source.stat().st_size > 0:
+                        source_path.unlink()
+                        dubbed_source.rename(source_path)
+                        logger.info("[Renderer] Replaced audio with dubbed mix")
+                    else:
+                        logger.warning("[Renderer] Audio replacement failed, using original audio")
+                except Exception as e:
+                    logger.warning("[Renderer] Failed to apply dubbed audio: %s", e)
 
             await self._update_progress(render_job_id, 20)
 

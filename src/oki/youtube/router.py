@@ -27,10 +27,9 @@ def _service(request: Request) -> YoutubeOAuthService:
 @router.post("/youtube/connect", status_code=status.HTTP_200_OK)
 async def youtube_connect(
     request: Request,
-    callback_url: str,
     principal: Principal = Depends(current_principal),
 ) -> dict[str, str]:
-    return await _service(request).start(callback_url, principal)
+    return await _service(request).start(principal)
 
 
 @router.post("/youtube/callback", response_model=ChannelResponse, status_code=status.HTTP_200_OK)

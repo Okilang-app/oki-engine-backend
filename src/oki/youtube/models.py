@@ -103,8 +103,3 @@ class AuthorizedChannel(Base):
         default=True,
         server_default="true",
     )
-    linked_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )

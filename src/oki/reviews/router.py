@@ -2,7 +2,7 @@ from uuid import UUID
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 import jwt
 
 from oki.api.errors import ProblemException, generate_correlation_id, parse_correlation_id
@@ -57,16 +57,21 @@ async def get_review_package(
 async def approve_review(
     job_id: UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     payload: DecisionRequest | None = None,
     principal: Principal = Depends(current_principal),
 ) -> ReviewDecisionResponse:
     data = payload or DecisionRequest()
-    decision = await _service(request).approve_job(
+    decision, render_job_id = await _service(request).approve_job(
         job_id,
         principal,
         reason=data.reason,
         correlation_id=_correlation_id(request),
     )
+    if render_job_id:
+        render_service = getattr(request.app.state, "render_service", None)
+        if render_service is not None:
+            background_tasks.add_task(render_service.execute_render_job, render_job_id)
     return ReviewDecisionResponse.model_validate(decision)
 
 

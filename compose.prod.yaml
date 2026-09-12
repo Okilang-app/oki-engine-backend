@@ -35,7 +35,7 @@ x-oki-env: &oki-env
   OKI_TOKEN_ENCRYPTION_KEY: ${OKI_TOKEN_ENCRYPTION_KEY:-}
   OKI_YOUTUBE_CLIENT_ID: ${OKI_YOUTUBE_CLIENT_ID:-}
   OKI_YOUTUBE_CLIENT_SECRET: ${OKI_YOUTUBE_CLIENT_SECRET:-}
-  OKI_YOUTUBE_OAUTH_CALLBACK_URL: ${OKI_YOUTUBE_OAUTH_CALLBACK_URL:-https://oki-engine.vercel.app/api/youtube/callback}
+  OKI_YOUTUBE_OAUTH_CALLBACK_URL: ${OKI_YOUTUBE_OAUTH_CALLBACK_URL:-https://oki-engine.vercel.app/settings/youtube-callback}
 
 services:
   # ── Data layer ────────────────────────────────────────────────────────────

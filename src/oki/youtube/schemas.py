@@ -20,7 +20,7 @@ class ChannelResponse(BaseModel):
     channel_title: str
     upload_defaults: dict[str, Any]
     is_active: bool
-    linked_at: datetime
+    created_at: datetime
 
 
 class ConnectionResponse(BaseModel):

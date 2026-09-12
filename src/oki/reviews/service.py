@@ -10,7 +10,11 @@ from oki.db.uow import UnitOfWork
 from oki.identity.authorization import Authorizer
 from oki.identity.enums import Action
 from oki.identity.schemas import Principal, ResourceScope
+from oki.jobs.enums import WorkflowEvent, WorkflowState
 from oki.jobs.models import LocalizationJob
+from oki.jobs.state_machine import WorkflowStateMachine
+from oki.renders.enums import RenderStatus
+from oki.renders.models import RenderJob
 from oki.reviews.enums import ReviewDecisionType
 from oki.reviews.models import (
     ReviewAssignments,
@@ -189,7 +193,7 @@ class ReviewService:
         principal: Principal,
         reason: str | None,
         correlation_id: UUID,
-    ) -> ReviewDecisions:
+    ) -> tuple[ReviewDecisions, UUID | None]:
         async with self._uow_factory() as uow:
             package = await uow.session.scalar(
                 select(ReviewPackages).where(ReviewPackages.job_id == job_id)
@@ -211,8 +215,27 @@ class ReviewService:
                 correlation_id=correlation_id,
             )
             uow.session.add(record)
+
+            package.status = "approved"
+
+            job = await uow.session.get(LocalizationJob, job_id)
+            render_job_id = None
+            if job is not None and job.state == WorkflowState.AUDIO_REVIEW:
+                WorkflowStateMachine().transition(job, WorkflowEvent.START_RENDER)
+                render_job = RenderJob(
+                    organization_id=package.organization_id,
+                    project_id=job.project_id,
+                    job_id=job_id,
+                    status=RenderStatus.QUEUED,
+                    progress_percent=0,
+                    created_by_user_id=principal.user_id,
+                )
+                uow.session.add(render_job)
+                await uow.session.flush()
+                render_job_id = render_job.id
+
             await uow.session.flush()
-            return record
+            return record, render_job_id
 
     async def reject_job(
         self,

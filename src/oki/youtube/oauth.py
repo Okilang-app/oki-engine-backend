@@ -35,13 +35,13 @@ class YoutubeOAuthService:
         self._authorizer = authorizer
         self._cipher = cipher
 
-    async def start(self, callback_url: str, principal: Principal) -> dict[str, str]:
+    async def start(self, principal: Principal) -> dict[str, str]:
         """Generate PKCE state and return the authorization URL."""
         async with self._uow_factory() as uow:
             self._authorizer.require(
                 principal,
                 Action.CREATOR_CREATE,
-                self._scope(principal.organization_id),
+                self._scope(principal.memberships[0].organization_id),
             )
 
             settings = get_settings()
@@ -60,13 +60,13 @@ class YoutubeOAuthService:
             creator_id = creator.id if creator else uuid4()
 
             connection = OAuthConnection(
-                organization_id=principal.organization_id,
+                organization_id=principal.memberships[0].organization_id,
                 creator_id=creator_id,
                 provider="youtube",
                 access_token_encrypted=b"",
                 refresh_token_encrypted=b"",
                 token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-                scope="https://www.googleapis.com/auth/youtube.upload",
+                scope="https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
                 state=state,
                 code_verifier=code_verifier,
                 created_by_user_id=principal.user_id,
@@ -77,7 +77,7 @@ class YoutubeOAuthService:
             auth_url = (
                 "https://accounts.google.com/o/oauth2/v2/auth"
                 f"?client_id={settings.youtube_client_id}"
-                f"&redirect_uri={callback_url}"
+                f"&redirect_uri={settings.youtube_oauth_callback_url}"
                 f"&response_type=code"
                 f"&scope={connection.scope}"
                 f"&state={state}"
@@ -97,7 +97,7 @@ class YoutubeOAuthService:
             self._authorizer.require(
                 principal,
                 Action.CREATOR_CREATE,
-                self._scope(principal.organization_id),
+                self._scope(principal.memberships[0].organization_id),
             )
 
             connection = await uow.session.scalar(
@@ -172,7 +172,7 @@ class YoutubeOAuthService:
                 channel_title=channel_title,
                 upload_defaults={},
                 is_active=True,
-                linked_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             uow.session.add(channel)
             await uow.session.flush()
@@ -233,7 +233,7 @@ class YoutubeOAuthService:
                     AuthorizedChannel.organization_id.in_(org_ids),
                     AuthorizedChannel.is_active.is_(True),
                 )
-                .order_by(AuthorizedChannel.linked_at.desc())
+                .order_by(AuthorizedChannel.created_at.desc())
             )
             return list(result)
 
