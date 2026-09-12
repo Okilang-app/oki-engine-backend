@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     youtube_client_secret: str | None = None
     youtube_oauth_callback_url: str = "http://localhost:8000/api/youtube/callback"
 
+    # Token encryption (Fernet key for encrypting OAuth tokens at rest)
+    token_encryption_key: str | None = None
+
     # Review links (creator portal JWT signing)
     review_link_secret: str | None = None
 

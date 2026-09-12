@@ -32,6 +32,10 @@ x-oki-env: &oki-env
   OKI_FFPROBE_PATH: ffprobe
   OKI_REVIEW_LINK_SECRET: ${OKI_REVIEW_LINK_SECRET}
   OKI_CORS_ORIGINS: ${OKI_CORS_ORIGINS:-https://oki-engine.vercel.app}
+  OKI_TOKEN_ENCRYPTION_KEY: ${OKI_TOKEN_ENCRYPTION_KEY:-}
+  OKI_YOUTUBE_CLIENT_ID: ${OKI_YOUTUBE_CLIENT_ID:-}
+  OKI_YOUTUBE_CLIENT_SECRET: ${OKI_YOUTUBE_CLIENT_SECRET:-}
+  OKI_YOUTUBE_OAUTH_CALLBACK_URL: ${OKI_YOUTUBE_OAUTH_CALLBACK_URL:-https://oki-engine.vercel.app/api/youtube/callback}
 
 services:
   # ── Data layer ────────────────────────────────────────────────────────────

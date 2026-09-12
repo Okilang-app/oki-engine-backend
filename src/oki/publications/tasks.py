@@ -44,10 +44,10 @@ def _get_youtube_client():
     from oki.identity.authorization import Authorizer
 
     settings = get_settings()
-    # Build minimal service with just what's needed for token refresh
-    # In production this should be injected via app state
+    if not settings.token_encryption_key:
+        raise RuntimeError("OKI_TOKEN_ENCRYPTION_KEY must be set for YouTube uploads")
     uow_factory = _get_uow_factory()
-    cipher = EnvelopeCipher()
+    cipher = EnvelopeCipher(settings.token_encryption_key)
     authorizer = Authorizer()
     oauth = YoutubeOAuthService(uow_factory, authorizer, cipher)
     return YoutubeClient(oauth)

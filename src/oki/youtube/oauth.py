@@ -221,6 +221,38 @@ class YoutubeOAuthService:
 
             return new_access_token
 
+    async def list_channels(self, principal: Principal) -> list[AuthorizedChannel]:
+        """Return all active YouTube channels for the user's organizations."""
+        async with self._uow_factory() as uow:
+            org_ids = [m.organization_id for m in principal.memberships]
+            if not org_ids:
+                return []
+            result = await uow.session.scalars(
+                select(AuthorizedChannel)
+                .where(
+                    AuthorizedChannel.organization_id.in_(org_ids),
+                    AuthorizedChannel.is_active.is_(True),
+                )
+                .order_by(AuthorizedChannel.linked_at.desc())
+            )
+            return list(result)
+
+    async def list_connections(self, principal: Principal) -> list[OAuthConnection]:
+        """Return all active OAuth connections for the user's organizations."""
+        async with self._uow_factory() as uow:
+            org_ids = [m.organization_id for m in principal.memberships]
+            if not org_ids:
+                return []
+            result = await uow.session.scalars(
+                select(OAuthConnection)
+                .where(
+                    OAuthConnection.organization_id.in_(org_ids),
+                    OAuthConnection.is_active.is_(True),
+                )
+                .order_by(OAuthConnection.created_at.desc())
+            )
+            return list(result)
+
     async def revoke(self, connection_id: UUID, principal: Principal) -> None:
         """Revoke a connection by marking it and its channels inactive."""
         async with self._uow_factory() as uow:

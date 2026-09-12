@@ -6,7 +6,7 @@ from oki.api.errors import ProblemException, generate_correlation_id, parse_corr
 from oki.identity.dependencies import current_principal
 from oki.identity.schemas import Principal
 from oki.youtube.oauth import YoutubeOAuthService
-from oki.youtube.schemas import ChannelResponse, OAuthCallbackRequest
+from oki.youtube.schemas import ChannelResponse, ConnectionResponse, OAuthCallbackRequest
 
 router = APIRouter(prefix="/api", tags=["youtube"])
 
@@ -45,6 +45,24 @@ async def youtube_callback(
         principal=principal,
     )
     return ChannelResponse.model_validate(channel)
+
+
+@router.get("/youtube/channels", response_model=list[ChannelResponse])
+async def list_channels(
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> list[ChannelResponse]:
+    channels = await _service(request).list_channels(principal)
+    return [ChannelResponse.model_validate(c) for c in channels]
+
+
+@router.get("/youtube/connections", response_model=list[ConnectionResponse])
+async def list_connections(
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> list[ConnectionResponse]:
+    connections = await _service(request).list_connections(principal)
+    return [ConnectionResponse.model_validate(c) for c in connections]
 
 
 @router.post("/youtube/revoke", status_code=status.HTTP_204_NO_CONTENT)

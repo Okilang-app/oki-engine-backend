@@ -149,6 +149,13 @@ async def _identity_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.analytics_service = AnalyticsService(uow_factory, authorizer)
     app.state.jobs_service = JobService(uow_factory, authorizer)
     app.state.notifications_service = NotificationService(uow_factory, authorizer)
+
+    if settings.token_encryption_key and settings.youtube_client_id:
+        from oki.crypto.envelope import EnvelopeCipher
+        from oki.youtube.oauth import YoutubeOAuthService
+        cipher = EnvelopeCipher(settings.token_encryption_key)
+        app.state.youtube_oauth_service = YoutubeOAuthService(uow_factory, authorizer, cipher)
+
     async with httpx.AsyncClient() as client:
         app.state.token_verifier = TokenVerifier(
             issuer=settings.keycloak_issuer,

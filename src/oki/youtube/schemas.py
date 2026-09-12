@@ -21,3 +21,14 @@ class ChannelResponse(BaseModel):
     upload_defaults: dict[str, Any]
     is_active: bool
     linked_at: datetime
+
+
+class ConnectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    organization_id: UUID
+    provider: str
+    scope: str
+    is_active: bool
+    token_expires_at: datetime
+    created_at: datetime
