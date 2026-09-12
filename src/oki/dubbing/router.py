@@ -246,11 +246,14 @@ async def get_mix_playback_url(
         output_key = mix.output_asset_reference
 
     settings = Settings()
+    from botocore.config import Config as BotoConfig
     s3 = boto3.client(
         "s3",
-        endpoint_url=str(settings.s3_public_endpoint_url or settings.s3_endpoint_url or "") or None,
-        aws_access_key_id=settings.s3_access_key or "",
-        aws_secret_access_key=settings.s3_secret_key or "",
+        endpoint_url=str(settings.s3_public_url or settings.s3_endpoint_url),
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+        config=BotoConfig(signature_version="s3v4"),
     )
     url = s3.generate_presigned_url(
         "get_object",
