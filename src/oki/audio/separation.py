@@ -85,21 +85,11 @@ class SourceSeparator:
                     capture_output=True, timeout=300,
                 )
 
-            def _extract_accompaniment():
-                # Low-pass + high-pass excludes the vocal range
-                subprocess.run(
-                    [
-                        ffmpeg, "-y", "-i", str(source_path),
-                        "-af", "volume=0.3",
-                        "-c:a", "aac", str(accompaniment_path),
-                    ],
-                    capture_output=True, timeout=300,
-                )
-
-            await asyncio.gather(
-                loop.run_in_executor(None, _extract_vocals),
-                loop.run_in_executor(None, _extract_accompaniment),
-            )
+            # No accompaniment is produced without demucs. A plain gain change
+            # ("volume=0.3") is not separation — it is the whole original mix,
+            # speech included, and bedding it under a dub replays the original
+            # voice beneath the translation.
+            await loop.run_in_executor(None, _extract_vocals)
 
             vocals_key = f"{prefix}/vocals.m4a"
             accompaniment_key = f"{prefix}/accompaniment.m4a"
@@ -116,12 +106,12 @@ class SourceSeparator:
 
             return {
                 "vocals": vocals_key if vocals_path.exists() else None,
-                "accompaniment": accompaniment_key if accompaniment_path.exists() else None,
+                "accompaniment": None,
                 "drums": None,
                 "bass": None,
                 "other": None,
                 "mock": False,
-                "method": "ffmpeg_filter",
+                "method": "ffmpeg_filter_no_accompaniment",
             }
 
     async def _separate_with_demucs(

@@ -175,6 +175,10 @@ class OpenCVRenderService:
                         "-c:v", "copy",
                         "-map", "0:v:0",
                         "-map", "1:a:0",
+                        # Pad the dub with silence so a dialogue track that ends
+                        # before the video does cannot truncate the picture:
+                        # -shortest would otherwise cut the video to the audio.
+                        "-af", "apad",
                         "-shortest",
                         "-y", str(dubbed_source),
                     )

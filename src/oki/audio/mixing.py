@@ -67,20 +67,10 @@ class AudioMixer:
             ambient_path = tmp / "ambient.m4a"
             has_separate_music = bool(music_keys)
 
-            if not has_separate_music:
-                # Use source audio at -18dB as ambient bed (simple duck)
-                await loop.run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        [
-                            ffmpeg_path, "-y",
-                            "-i", str(source_path),
-                            "-vn", "-af", "volume=-18dB",
-                            "-c:a", "aac", str(ambient_path),
-                        ],
-                        capture_output=True, timeout=300,
-                    ),
-                )
+            # No ambient bed is built from the source here. The source track is
+            # the full original mix, dialogue included, so laying it under the
+            # dub just replays the original speech beneath the translation —
+            # only a real instrumental stem (music_keys) may be bedded.
 
             # Mix dialogue + ambient with loudness normalization
             import math as _math
@@ -97,7 +87,7 @@ class AudioMixer:
                 filter_graph = (
                     f"[0:a]volume={d_vol:.4f}[d];"
                     f"[1:a]volume={ambient_volume:.4f}[m];"
-                    f"[d][m]amix=inputs=2:duration=first[out];"
+                    f"[d][m]amix=inputs=2:duration=longest[out];"
                     f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,{_limiter}[final]"
                 )
             elif ambient_path.exists():
@@ -105,7 +95,7 @@ class AudioMixer:
                 filter_graph = (
                     f"[0:a]volume={d_vol:.4f}[d];"
                     f"[1:a]volume={ambient_volume:.4f}[m];"
-                    f"[d][m]amix=inputs=2:duration=first[out];"
+                    f"[d][m]amix=inputs=2:duration=longest[out];"
                     f"[out]loudnorm=I={target_loudness_lufs}:TP=-1.5:LRA=11,{_limiter}[final]"
                 )
             else:

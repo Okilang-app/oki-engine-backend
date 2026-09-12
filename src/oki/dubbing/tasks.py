@@ -449,6 +449,42 @@ async def run_audio_mix_pipeline(
     }
 
 
+# Hard ceiling on time-compression. Past roughly 1.5x a voice turns chipmunky,
+# so a line that long is left to overrun rather than made unlistenable.
+MAX_DUB_TEMPO = 1.5
+
+
+def _probe_duration(path, ffmpeg: str) -> float | None:
+    """Duration of an audio file in seconds, or None when it cannot be read."""
+    import subprocess
+    from pathlib import Path as _P
+
+    exe = _P(ffmpeg)
+    ffprobe = str(exe.with_name("ffprobe" + exe.suffix)) if exe.parent.name else "ffprobe"
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return None
+
+
+def _fit_tempo(path, start: float | None, end: float | None, ffmpeg: str) -> float | None:
+    """atempo factor that fits a TTS clip into its slot, or None to leave it alone."""
+    if start is None or end is None:
+        return None
+    slot = float(end) - float(start)
+    if slot <= 0:
+        return None
+    spoken = _probe_duration(path, ffmpeg)
+    if not spoken or spoken <= slot:
+        return None
+    return min(spoken / slot, MAX_DUB_TEMPO)
+
+
 def _assemble_dialogue_track(
     segments: list[tuple[float | None, float | None, Path, str]],
     output_path: Path,
@@ -475,12 +511,19 @@ def _assemble_dialogue_track(
             vol_db = float(ov.get("volume_db", 0.0))
             nudge_ms = int(ov.get("nudge_ms", 0))
             delay_ms = max(0, int((start or 0) * 1000) + nudge_ms)
+
+            stages = []
+            # Speed the clip up when the synthesised line runs past the slot it
+            # replaces. Translated speech is routinely longer than the source,
+            # and every overrun spills onto the next line: amix sums them, so
+            # the dub is heard over itself instead of tracking the picture.
+            tempo = _fit_tempo(path, start, end, ffmpeg)
+            if tempo is not None:
+                stages.append(f"atempo={tempo:.4f}")
             if vol_db != 0.0:
-                import math
-                vol_linear = 10 ** (vol_db / 20.0)
-                filters.append(f"[{i}:a]volume={vol_linear:.4f},adelay={delay_ms}|{delay_ms}[s{i}]")
-            else:
-                filters.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[s{i}]")
+                stages.append(f"volume={10 ** (vol_db / 20.0):.4f}")
+            stages.append(f"adelay={delay_ms}|{delay_ms}")
+            filters.append(f"[{i}:a]" + ",".join(stages) + f"[s{i}]")
 
         mix_inputs = "".join(f"[s{i}]" for i in range(len(segments)))
         filters.append(f"{mix_inputs}amix=inputs={len(segments)}:duration=longest:normalize=0[out]")
