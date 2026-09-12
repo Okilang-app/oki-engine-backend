@@ -113,6 +113,12 @@ class OpenCVRenderService:
                 .order_by(AdSegments.start_time)
             ))
 
+            logger.info(
+                "[Renderer] Found %d ad segments for job %s: %s",
+                len(segments), job.id,
+                [(str(s.id)[:8], s.status.value, str(s.proposed_replacement_ad_id)[:8] if s.proposed_replacement_ad_id else None) for s in segments],
+            )
+
             # Load replacement ad files for segments marked "replaced"
             ad_map: dict[UUID, InternalAd] = {}
             for seg in segments:
@@ -121,6 +127,7 @@ class OpenCVRenderService:
                         ad = await uow.session.get(InternalAd, seg.proposed_replacement_ad_id)
                         if ad:
                             ad_map[seg.proposed_replacement_ad_id] = ad
+                            logger.info("[Renderer] Will insert ad '%s' (key=%s) for segment %s", ad.name, ad.storage_key, str(seg.id)[:8])
 
             # Load latest completed dubbed audio mix for this job
             dubbed_mix = await uow.session.scalar(

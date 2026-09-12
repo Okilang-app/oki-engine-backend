@@ -180,8 +180,7 @@ class SponsorReviewService:
                 Action.SPONSOR_REPLACE,
                 self._scope(ad_segment.organization_id),
             )
-            # If a replacement was proposed, approving becomes "replaced"
-            if ad_segment.status == SponsorStatus.PROPOSED and ad_segment.proposed_replacement_ad_id:
+            if ad_segment.proposed_replacement_ad_id:
                 ad_segment.status = SponsorStatus.REPLACED
             else:
                 ad_segment.status = SponsorStatus.CONFIRMED
