@@ -114,6 +114,8 @@ class Project(TimestampMixin, VersionMixin, Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    target_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     state: Mapped[WorkflowState] = mapped_column(
         WORKFLOW_STATE_TYPE,
         nullable=False,

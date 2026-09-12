@@ -68,6 +68,8 @@ class JobService:
                 organization_id=org_id,
                 name=name,
                 state=WorkflowState.CREATOR_LEAD,
+                source_language=source_language,
+                target_language=target_language,
             )
             uow.session.add(project)
             await uow.session.flush()
@@ -628,7 +630,7 @@ class JobService:
                         creator_id=None,
                         agreement_id=None,
                         title=project.name,
-                        target_language=None,
+                        target_language=project.target_language,
                         workflow_state=job.state.value,
                         created_at=job.created_at,
                     )
@@ -662,7 +664,7 @@ class JobService:
                 creator_id=None,
                 agreement_id=None,
                 title=project.name,
-                target_language=getattr(job, "target_language", None),
+                target_language=project.target_language,
                 workflow_state=job.state.value,
                 created_at=job.created_at,
             )
