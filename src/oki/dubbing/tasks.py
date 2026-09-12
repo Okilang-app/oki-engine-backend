@@ -254,34 +254,6 @@ async def run_audio_mix_pipeline(
             )
         source_key = asset.storage_key if asset else None
 
-        # Load any approved replacement ads for this job so their audio is
-        # included in the mix at the correct timecodes.
-        from oki.sponsors.models import AdSegments
-        from oki.ads.models import InternalAd
-
-        ad_tts_extras: list[dict] = []
-        replaced_ads = list(await uow.session.scalars(
-            select(AdSegments)
-            .where(
-                AdSegments.job_id == job_id,
-                AdSegments.status == "replaced",
-                AdSegments.proposed_replacement_ad_id.isnot(None),
-            )
-        ))
-        for ad_seg in replaced_ads:
-            internal_ad = await uow.session.get(InternalAd, ad_seg.proposed_replacement_ad_id)
-            if internal_ad and internal_ad.storage_key:
-                ad_tts_extras.append({
-                    "segment_id": f"ad_{ad_seg.id}",
-                    "storage_key": internal_ad.storage_key,
-                    "start_time": float(ad_seg.start_time),
-                    "end_time": float(ad_seg.end_time),
-                    "status": "completed",
-                })
-        if ad_tts_extras:
-            tts_results = list(tts_results) + ad_tts_extras
-            log.info("Added %d replacement ad audio tracks for job %s", len(ad_tts_extras), job_id)
-
     # ── Create AudioMixVersion record ─────────────────────────────────────
     async with UnitOfWork(session_factory) as uow:
         prev = await uow.session.scalar(
