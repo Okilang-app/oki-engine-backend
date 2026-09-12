@@ -542,19 +542,32 @@ class OpenCVRenderService:
     async def _update_progress(
         self, render_job_id: UUID, progress: int, output_key: str | None = None
     ) -> None:
+        from oki.jobs.enums import WorkflowEvent, WorkflowState
+        from oki.jobs.state_machine import WorkflowStateMachine
+
         async with self._uow_factory() as uow:
-            job = await uow.session.get(RenderJob, render_job_id)
-            if job is None:
+            render_job = await uow.session.get(RenderJob, render_job_id)
+            if render_job is None:
                 return
-            job.progress_percent = progress
+            render_job.progress_percent = progress
             if output_key:
-                job.output_storage_key = output_key
-                job.status = RenderStatus.COMPLETED
+                render_job.output_storage_key = output_key
+                render_job.status = RenderStatus.COMPLETED
             elif progress >= 100:
-                job.status = RenderStatus.COMPLETED
+                render_job.status = RenderStatus.COMPLETED
             else:
-                job.status = RenderStatus.PROCESSING
+                render_job.status = RenderStatus.PROCESSING
             await uow.session.flush()
+
+            if render_job.status == RenderStatus.COMPLETED:
+                loc_job = await uow.session.get(LocalizationJob, render_job.job_id)
+                if loc_job and loc_job.state == WorkflowState.RENDER_RUNNING:
+                    sm = WorkflowStateMachine()
+                    sm.transition(loc_job, WorkflowEvent.REQUEST_INTERNAL_QA)
+                    sm.transition(loc_job, WorkflowEvent.REQUEST_CREATOR_REVIEW)
+                    sm.transition(loc_job, WorkflowEvent.MARK_PUBLISH_READY)
+                    await uow.session.flush()
+                    logger.info("[Renderer] Job %s advanced to PUBLISH_READY", render_job.job_id)
 
     async def _fail(self, render_job_id: UUID, message: str) -> None:
         async with self._uow_factory() as uow:
